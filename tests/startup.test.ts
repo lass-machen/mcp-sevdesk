@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const AUTH_TOKEN = "k7Qp2Zr9Xw4Lm8Nc3Vb6Hy1Td5Fs0GaJ2uE7oR4iW9qP3sD6fK1lZ8xC5vB0nMt";
+const AUTH_TOKEN = "k7Qp2Zr9Xw4Lm8Nc3Vb6Hy1Td5Fs0GaJ2uE7oR4iW9qP3sD6fK1lZ8xC5vB0nMt"; // gitleaks:allow (synthetic test token)
 
 interface RunningServer {
   child: ChildProcess;

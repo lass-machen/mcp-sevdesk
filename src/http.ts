@@ -1,4 +1,4 @@
-import type { Server as HttpServer } from "node:http";
+import type { Server as HttpServer, ServerResponse } from "node:http";
 import { Server as NetServer, type Socket } from "node:net";
 import express, { type ErrorRequestHandler, type Express, type RequestHandler } from "express";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -287,8 +287,19 @@ interface ConnectionTracking {
   sockets: Set<Socket>;
   /** Number of requests per socket whose response has not finished yet (more than one when pipelining). */
   busy: Map<Socket, number>;
+  /** Responses that have not finished yet. */
+  pending: Set<ServerResponse>;
   closing: boolean;
 }
+
+// Tells the client not to send further requests on a connection that is about to close
+function announceClose(res: ServerResponse) {
+  if (!res.headersSent) {
+    res.setHeader("Connection", "close");
+  }
+}
+
+const LISTEN_ERROR_CODES = new Set(["EADDRINUSE", "EADDRNOTAVAIL", "EACCES"]);
 
 const connectionTracking = new WeakMap<HttpServer, ConnectionTracking>();
 
@@ -300,7 +311,12 @@ export async function listenHttp(app: Express, port: number, host: string): Prom
   const httpServer = await new Promise<HttpServer>((resolve, reject) => {
     const server = app.listen(port, host, (error?: Error) => {
       if (error) {
-        reject(error);
+        const code = (error as NodeJS.ErrnoException).code;
+        reject(
+          code && LISTEN_ERROR_CODES.has(code)
+            ? new ConfigError(`cannot listen on ${host}:${port} (${code}), check MCP_HTTP_HOST and MCP_HTTP_PORT`)
+            : error
+        );
         return;
       }
       resolve(server);
@@ -309,7 +325,7 @@ export async function listenHttp(app: Express, port: number, host: string): Prom
   httpServer.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
   httpServer.headersTimeout = HEADERS_TIMEOUT_MS;
 
-  const tracking: ConnectionTracking = { sockets: new Set(), busy: new Map(), closing: false };
+  const tracking: ConnectionTracking = { sockets: new Set(), busy: new Map(), pending: new Set(), closing: false };
   connectionTracking.set(httpServer, tracking);
 
   httpServer.on("connection", (socket: Socket) => {
@@ -323,7 +339,12 @@ export async function listenHttp(app: Express, port: number, host: string): Prom
   httpServer.on("request", (req, res) => {
     const socket = req.socket;
     tracking.busy.set(socket, (tracking.busy.get(socket) ?? 0) + 1);
+    tracking.pending.add(res);
+    if (tracking.closing) {
+      announceClose(res);
+    }
     res.once("close", () => {
+      tracking.pending.delete(res);
       const pending = (tracking.busy.get(socket) ?? 1) - 1;
       if (pending > 0) {
         tracking.busy.set(socket, pending);
@@ -345,7 +366,8 @@ export async function listenHttp(app: Express, port: number, host: string): Prom
  *
  * Every connection is ended with destroySoon(), which waits until buffered
  * response data has been written: idle ones right away, busy ones as soon as
- * their last pending response has finished. http.Server#close() cannot be used here,
+ * their last pending response has finished. Responses that are still pending
+ * carry "Connection: close", so clients do not reuse the connection. http.Server#close() cannot be used here,
  * because it calls closeIdleConnections(), and Node already counts a
  * connection as idle once res.end() was called. That destroys connections
  * whose response is still being sent to a slow client and truncates the
@@ -359,6 +381,9 @@ export function closeHttpServer(httpServer: HttpServer): Promise<void> {
     return Promise.reject(new Error("closeHttpServer() requires a server started with listenHttp()"));
   }
   tracking.closing = true;
+  for (const res of tracking.pending) {
+    announceClose(res);
+  }
 
   return new Promise((resolve, reject) => {
     NetServer.prototype.close.call(httpServer, (error?: Error) => {

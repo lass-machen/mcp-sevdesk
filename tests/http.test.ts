@@ -17,7 +17,7 @@ import { createServer, allTools, SERVER_INFO } from "../src/server.js";
 import type { SevdeskClient } from "../src/client.js";
 
 // Mixed case and digits, so that comparisons ignoring case or parts of the token fail the tests
-const AUTH_TOKEN = "k7Qp2Zr9Xw4Lm8Nc3Vb6Hy1Td5Fs0GaJ2uE7oR4iW9qP3sD6fK1lZ8xC5vB0nMt";
+const AUTH_TOKEN = "k7Qp2Zr9Xw4Lm8Nc3Vb6Hy1Td5Fs0GaJ2uE7oR4iW9qP3sD6fK1lZ8xC5vB0nMt"; // gitleaks:allow (synthetic test token)
 const MCP_HEADERS = {
   "Content-Type": "application/json",
   Accept: "application/json, text/event-stream",
@@ -676,6 +676,8 @@ describe("closeHttpServer", () => {
       release.resolve();
       const res = await response;
       expect(res.statusCode).toBe(200);
+      // The client must not reuse a connection that is about to be closed
+      expect(res.headers.connection).toBe("close");
       expect(JSON.parse((await readBody(res)).toString()).result.isError).toBeFalsy();
       // Resolves only once the keep-alive connection is closed, not after the 95s keep-alive timeout
       await closed;
@@ -772,6 +774,8 @@ describe("closeHttpServer", () => {
     await closed;
 
     expect(received.match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
+    // Only the response that was still pending at shutdown announces the close
+    expect(received.match(/\r\nConnection: close\r\n/gi)).toHaveLength(1);
     expect(received).toContain('"id":1');
     expect(received).toContain('"id":2');
   });
@@ -784,6 +788,21 @@ describe("closeHttpServer", () => {
       expect(server.headersTimeout).toBe(100_000);
     } finally {
       await closeHttpServer(server);
+    }
+  });
+
+  it("sollte einen belegten Port als Konfigurationsfehler melden", async () => {
+    const app = createHttpApp(baseConfig(), () => createServer(fakeClient));
+    const first = await listenHttp(app, 0, "127.0.0.1");
+    const { port } = first.address() as AddressInfo;
+    try {
+      const error = await listenHttp(app, port, "127.0.0.1").catch((e) => e);
+      expect(error).toBeInstanceOf(ConfigError);
+      expect(error.message).toBe(
+        `cannot listen on 127.0.0.1:${port} (EADDRINUSE), check MCP_HTTP_HOST and MCP_HTTP_PORT`
+      );
+    } finally {
+      await closeHttpServer(first);
     }
   });
 
