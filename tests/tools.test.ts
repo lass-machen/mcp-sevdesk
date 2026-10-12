@@ -132,10 +132,11 @@ describe("sevdesk-Tools", () => {
     await invoiceTools.get_invoice_pdf.handler(client, { invoiceId: 42 });
     await invoiceTools.get_invoice_pdf.handler(client, { invoiceId: 42, download: true });
 
-    expect(new URL(requests[0].url).searchParams.get("preventSendBy")).toBe("true");
-    expect(new URL(requests[0].url).searchParams.has("download")).toBe(false);
-    expect(new URL(requests[1].url).searchParams.get("download")).toBe("true");
-    expect(new URL(requests[1].url).searchParams.get("preventSendBy")).toBe("true");
+    expect([...new URL(requests[0].url).searchParams]).toEqual([["preventSendBy", "true"]]);
+    expect([...new URL(requests[1].url).searchParams].sort()).toEqual([
+      ["download", "true"],
+      ["preventSendBy", "true"],
+    ]);
   });
 
   it("sollte Buchungen mit den Typen und Datumsformaten der Spec senden", async () => {
@@ -175,6 +176,19 @@ describe("sevdesk-Tools", () => {
       payeePayerName: "Bäckerei Müller",
       status: 100,
     });
+  });
+
+  it("sollte einen übergebenen Transaktionsstatus weitergeben", async () => {
+    const { client, requests } = recordingClient();
+    await accountTools.create_transaction.handler(client, {
+      checkAccountId: 5,
+      amount: 10,
+      valueDate: "2026-01-31T00:00:00+01:00",
+      payeePayerName: "X",
+      status: 300,
+    });
+
+    expect((await requests[0].json()).status).toBe(300);
   });
 
   it("sollte Artikelpreise als Zahlen senden", async () => {
@@ -240,7 +254,10 @@ describe("Eingabeprüfung über MCP", () => {
     ["book_invoice", { invoiceId: 1, amount: 1, date: "1767225600", type: "N", checkAccountId: 5 }],
     ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31T00:00:00Z", payeePayerName: "X", status: 500 }],
     ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31", payeePayerName: "X" }],
-    ["create_part", { name: "Beratung", taxRate: 19 }],
+    ["create_part", { name: "Beratung", stock: 0, taxRate: 19 }],
+    ["create_part", { name: "Beratung", partNumber: "B-1", taxRate: 19 }],
+    ["create_part", { name: "Beratung", partNumber: "B-1", stock: 0 }],
+    ["create_part", { name: "Beratung", partNumber: "", stock: 0, taxRate: 19 }],
   ])("sollte %s mit %j ablehnen, ohne sevdesk aufzurufen", async (name, args) => {
     const { client, requests, close } = await connect();
     try {

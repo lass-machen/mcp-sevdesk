@@ -833,6 +833,101 @@ describe("closeHttpServer", () => {
     expect(connection.received().match(/\r\nConnection: close\r\n/gi)).toHaveLength(1);
   });
 
+  // sevdesk stand-in: the first call returns a large result, every call waits for its release
+  function stagedClient(firstResult: unknown) {
+    const calls: QueuedCall[] = [];
+    const next = () => {
+      const call: QueuedCall = { started: deferred(), release: deferred(), taken: false };
+      calls.push(call);
+      return call;
+    };
+    let count = 0;
+    const client = {
+      GET: async () => {
+        const call = calls.find((candidate) => !candidate.taken);
+        if (!call) {
+          throw new Error("Unexpected sevdesk call");
+        }
+        call.taken = true;
+        count += 1;
+        const result = count === 1 ? firstResult : { objects: [] };
+        call.started.resolve();
+        await call.release.promise;
+        return { data: result, error: undefined };
+      },
+    } as unknown as SevdeskClient;
+    return { client, next, count: () => count };
+  }
+
+  it("sollte eine Anfrage hinter einer schon ohne close gesendeten Antwort noch beantworten", async () => {
+    const { client, next } = stagedClient({ objects: "x".repeat(32 * 1024 * 1024) });
+    const first = next();
+    const second = next();
+    const app = createHttpApp(baseConfig(), () => createServer(client));
+    const server = await listenHttp(app, 0, "127.0.0.1");
+    const serverResponses: ServerResponse[] = [];
+    server.on("request", (_req, res) => serverResponses.push(res));
+    const { port } = server.address() as AddressInfo;
+    const connection = await rawConnection(port);
+
+    // The large first response sends its headers (keep-alive) before shutdown and stays unfinished
+    connection.socket.pause();
+    connection.socket.write(rawRequest(1));
+    await first.started.promise;
+    first.release.resolve();
+    await vi.waitFor(() => expect(serverResponses[0]?.headersSent).toBe(true), { timeout: 10_000 });
+    const closed = closeHttpServer(server);
+    connection.socket.write(rawRequest(2));
+    await second.started.promise;
+    second.release.resolve();
+    connection.socket.resume();
+    await connection.closed;
+    await closed;
+
+    const received = connection.received();
+    expect(received.match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
+    expect(received.match(/\r\nConnection: close\r\n/gi)).toHaveLength(1);
+    expect(received.lastIndexOf("Connection: close")).toBeGreaterThan(received.indexOf("HTTP/1.1 200 OK", 1));
+  }, 30_000);
+
+  it("sollte die Ankündigung über mehrere nachgereichte Anfragen bis zur letzten weitergeben", async () => {
+    const { client, next, count } = stagedClient({ objects: "x".repeat(32 * 1024 * 1024) });
+    const first = next();
+    const second = next();
+    const third = next();
+    const app = createHttpApp(baseConfig(), () => createServer(client));
+    const server = await listenHttp(app, 0, "127.0.0.1");
+    const serverResponses: ServerResponse[] = [];
+    server.on("request", (_req, res) => serverResponses.push(res));
+    const { port } = server.address() as AddressInfo;
+    const connection = await rawConnection(port);
+
+    connection.socket.pause();
+    connection.socket.write(rawRequest(1));
+    await first.started.promise;
+    const closed = closeHttpServer(server);
+    // The announcement moves from the first to the second response
+    connection.socket.write(rawRequest(2));
+    await second.started.promise;
+    // The first response sends its headers without the announcement and stays unfinished
+    first.release.resolve();
+    await vi.waitFor(() => expect(serverResponses[0]?.headersSent).toBe(true), { timeout: 10_000 });
+    // A third request must still be processed and take over the announcement
+    connection.socket.write(rawRequest(3));
+    await third.started.promise;
+    second.release.resolve();
+    third.release.resolve();
+    connection.socket.resume();
+    await connection.closed;
+    await closed;
+
+    const received = connection.received();
+    expect(count()).toBe(3);
+    expect(received.match(/HTTP\/1\.1 200 OK/g)).toHaveLength(3);
+    expect(received.match(/\r\nConnection: close\r\n/gi)).toHaveLength(1);
+    expect(received.lastIndexOf("Connection: close")).toBeGreaterThan(received.indexOf('"id":2'));
+  }, 30_000);
+
   it("sollte Anfragen nach einem schon gesendeten Connection: close nicht mehr ausführen", async () => {
     // A large first response is still being sent when the second request arrives on the same connection
     let calls = 0;
@@ -941,6 +1036,33 @@ describe("closeHttpServer", () => {
     } finally {
       await closeHttpServer(first);
     }
+  });
+
+  // Fake app whose listen() fails like Node does, to cover codes that are hard to provoke in tests
+  function failingApp(code: string) {
+    return {
+      listen: (_port: number, _host: string, callback: (error?: Error) => void) => {
+        setImmediate(() => callback(Object.assign(new Error(`listen ${code}`), { code })));
+        return {};
+      },
+    } as unknown as Parameters<typeof listenHttp>[0];
+  }
+
+  it.each(["EADDRINUSE", "EADDRNOTAVAIL", "EACCES", "EPERM", "ENOTFOUND", "EAI_AGAIN"])(
+    "sollte den Listen-Fehler %s als Konfigurationsfehler melden",
+    async (code) => {
+      const error = await listenHttp(failingApp(code), 3000, "mcp.example.org").catch((e) => e);
+      expect(error).toBeInstanceOf(ConfigError);
+      expect(error.message).toBe(
+        `cannot listen on mcp.example.org:3000 (${code}), check MCP_HTTP_HOST and MCP_HTTP_PORT`
+      );
+    }
+  );
+
+  it("sollte andere Listen-Fehler unverändert weitergeben", async () => {
+    const error = await listenHttp(failingApp("EINVAL"), 3000, "127.0.0.1").catch((e) => e);
+    expect(error).not.toBeInstanceOf(ConfigError);
+    expect(error.code).toBe("EINVAL");
   });
 
   it("sollte eine nicht vorhandene Adresse als Konfigurationsfehler melden", async () => {
