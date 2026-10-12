@@ -91,7 +91,7 @@ Verhalten des HTTP-Transports:
 - **Authentifizierung**: Bis auf den Health-Check verlangt jeder Pfad den Bearer-Token, auch unbekannte Pfade antworten ohne Token mit `401`.
 - **Health-Check**: `GET /healthz` antwortet ohne Authentifizierung mit `{"status":"ok"}` und gibt keine weiteren Informationen preis.
 - **Origin-Prüfung**: Standardmäßig aus. Der Endpunkt akzeptiert ausschließlich Bearer-Token, Browser können diesen Header ohne CORS-Freigabe nicht fremdseitig setzen, und der Server sendet keine CORS-Header. Ein festes Origin-Gate würde dagegen Remote-Clients aussperren, die einen `Origin`-Header mitsenden. Wer die Prüfung braucht, setzt `MCP_ALLOWED_ORIGINS`. Diese Abwägung gilt nur, solange der Token ausschließlich im `Authorization`-Header akzeptiert wird und der Server keine CORS-Header sendet; Tests sichern beides ab.
-- **Shutdown**: Bei `SIGTERM` oder `SIGINT` nimmt der Server keine neuen Verbindungen mehr an, schließt ruhende Verbindungen, lässt laufende Anfragen bis zu 10 Sekunden zu Ende laufen und liefert ihre Antworten vollständig aus. Danach beendet er sich mit Exit-Code 0, nach Ablauf der 10 Sekunden mit Exit-Code 1. Ein zweites Signal beendet den Prozess sofort.
+- **Shutdown**: Bei `SIGTERM` oder `SIGINT` nimmt der Server keine neuen Verbindungen mehr an, schließt ruhende Verbindungen, lässt laufende Anfragen bis zu 10 Sekunden zu Ende laufen und liefert ihre Antworten vollständig aus, auch bei Pipelining. Die letzte Antwort einer Verbindung kündigt mit `Connection: close` an, dass die Verbindung danach endet. Waren ihre Header beim Signal schon gesendet, fehlt diese Ankündigung; ein Client, der die Verbindung danach wiederverwendet, sieht sie geschlossen. Anfragen, die nach einer schon gesendeten Ankündigung auf derselben Verbindung eintreffen, führt der Server nicht mehr aus. Danach beendet er sich mit Exit-Code 0, nach Ablauf der 10 Sekunden mit Exit-Code 1. Ein zweites Signal beendet den Prozess sofort.
 
 Der Bearer-Token gewährt vollen Zugriff auf alle Tools und damit auf den sevdesk-Account, einschließlich schreibender Aktionen wie Rechnungsversand, Stornierung und Löschen von Kontakten. Den Token entsprechend behandeln und nur über HTTPS übertragen.
 
@@ -129,7 +129,7 @@ Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/ni
 - Korrekturen an einzelnen Tools, abgeglichen mit der OpenAPI-Spezifikation von sevdesk (gegen die echte API noch nicht geprüft):
   - `mark_invoice_as_sent` sendet `sendType` und `sendDraft` im JSON-Body statt als Query-Parameter. `sendType` ist jetzt Pflicht, `sendDraft` ist standardmäßig `false`.
   - `upload_voucher_file` lädt die Datei als `multipart/form-data` im Feld `file` hoch. Die Parameter `voucherId` und `creditDebit` entfallen, weil der Endpunkt sie nicht kennt und die Datei nur temporär ablegt.
-  - `get_invoice_pdf` sendet immer `preventSendBy=true`. Ohne diesen Parameter markiert sevdesk die Rechnung beim Abruf des PDFs als versendet; das Tool ist damit wirklich lesend. Der Parameter `preventSendBy` entfällt.
+  - `get_invoice_pdf` sendet immer `preventSendBy=true` und bietet den Parameter nicht mehr an. Die Spec beschreibt ihn nur knapp („Defines if u want to send the invoice“); der Upstream-Test setzt ihn ausdrücklich, damit die Rechnung beim PDF-Abruf nicht als versendet gilt. Gegen die echte API ist das nicht geprüft.
   - `list_transactions` erwartet `startDate` und `endDate` als ISO-8601-Zeitpunkt mit Zeitzone statt als Unix-Zeitstempel.
   - `book_invoice` und `book_voucher` verwenden die Buchungstypen der Spec (`FULL_PAYMENT`, `N`, `CB`, `CF`, `O`, `OF`, `MTC`); die dort unbekannten `MF` und `C` entfallen. Das Buchungsdatum ist bei Rechnungen ein Unix-Zeitstempel, bei Belegen ein ISO-8601-Zeitpunkt.
   - `create_transaction` sendet den Pflichtstatus (Standard `100`, angelegt) und verlangt `payeePayerName`; Wert- und Buchungsdatum sind ISO-8601-Zeitpunkte.
@@ -139,7 +139,8 @@ Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/ni
   - `list_check_accounts` gibt `limit` und `offset` an die API weiter.
   - `get_check_account_balance` erwartet `date` im Format `YYYY-MM-DD` und verwendet standardmäßig das heutige Datum in Deutschland statt das UTC-Datum.
   - IDs und `limit` akzeptieren nur positive ganze Zahlen, `offset` nur ganze Zahlen ab 0.
-  - Die Listen-Tools senden `limit` und `offset`, obwohl die Spec sie nicht für jeden Endpunkt aufführt; sevdesk unterstützt sie nach bisheriger Nutzung allgemein (nicht gegen die echte API geprüft).
+  - `create_part` verlangt `partNumber`, `stock` und `taxRate`, wie die Spec.
+  - Die Listen-Tools senden `limit` und `offset`, obwohl die Spec sie für keinen dieser Endpunkte aufführt. Das Upstream-Projekt hat sie so eingeführt; ob sevdesk sie überall auswertet, ist nicht gegen die echte API geprüft.
 
 ## Verfügbare Tools
 
@@ -151,7 +152,9 @@ Jedes Tool trägt MCP-Annotations (`readOnlyHint`, `destructiveHint`, `idempoten
 - **Anlegend**: `create_contact`, `create_part`, `create_tag`, `create_transaction`, `upload_voucher_file`.
 - **Ändernd oder löschend** (`destructiveHint: true`): `update_contact`, `delete_contact`, `update_part`, `update_tag`, `delete_tag`, `mark_invoice_as_sent`, `book_invoice`, `cancel_invoice`, `book_voucher` und `send_invoice_by_email`, das zusätzlich eine E-Mail außerhalb von sevdesk verschickt (`openWorldHint: true`).
 
-Mit `MCP_READ_ONLY=true` registriert der Server nur die lesenden Tools. Schreibende Tools erscheinen dann nicht in `tools/list` und lassen sich nicht aufrufen. So lässt sich etwa eine zweite, rein lesende Instanz mit eigenem Token betreiben. Die Einordnung folgt der API-Spezifikation von sevdesk. Die dort beschriebene Nebenwirkung beim PDF-Abruf (Markierung der Rechnung als versendet) unterdrückt `get_invoice_pdf` immer.
+Ohne weitere Wirkung wiederholbar (`idempotentHint: true`) sind von den schreibenden Tools `update_contact`, `delete_contact`, `update_part`, `update_tag`, `delete_tag` und `mark_invoice_as_sent`.
+
+Mit `MCP_READ_ONLY=true` registriert der Server nur die lesenden Tools. Schreibende Tools erscheinen dann nicht in `tools/list` und lassen sich nicht aufrufen. So lässt sich etwa eine zweite, rein lesende Instanz mit eigenem Token betreiben. Die Einordnung folgt der API-Spezifikation von sevdesk; `get_invoice_pdf` setzt dabei immer `preventSendBy=true`, damit der PDF-Abruf die Rechnung nicht als versendet markiert.
 
 ### Kontakte
 
