@@ -80,6 +80,7 @@ npm start
 | `MCP_ALLOWED_HOSTS` | nein | | Kommagetrennte Hostnamen ohne Schema, Port und Pfad, die im `Host`-Header akzeptiert werden (Schutz vor DNS-Rebinding). Internationalisierte Domains in Punycode, IP-Adressen in kanonischer Schreibweise. Leer deaktiviert die Prüfung, außer bei Bindung an eine Loopback-Adresse: Dann gelten `localhost`, `127.0.0.1` und `[::1]`. |
 | `MCP_ALLOWED_ORIGINS` | nein | | Kommagetrennte http(s)-Origins wie `https://claude.ai`. Trägt eine Anfrage einen anderen `Origin`-Header, antwortet der Server mit `403`. Anfragen ohne `Origin` (alle Nicht-Browser-Clients) sind immer erlaubt. Leer deaktiviert die Prüfung. |
 | `MCP_HTTP_BODY_LIMIT` | nein | `10mb` | Maximale Größe einer Anfrage zwischen `1kb` und `100mb`. `upload_voucher_file` überträgt Dateien base64-kodiert. |
+| `MCP_READ_ONLY` | nein | `false` | `true` registriert nur lesende Tools (gilt auch für stdio), siehe [Lesende und schreibende Tools](#lesende-und-schreibende-tools). |
 
 Ungültige Werte führen beim Start zu einer Fehlermeldung und Exit-Code 1.
 
@@ -124,8 +125,28 @@ Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/ni
 - Ungültige Argumente und unbekannte Tools meldet der Server, so wie das SDK es vorgibt, als Tool-Ergebnis mit `isError: true` statt als JSON-RPC-Fehler. Fehlermeldungen tragen nicht mehr das Präfix `Error: `.
 - Jede Antwort der sevdesk API mit einem Status außerhalb von 2xx gilt als Fehler, auch ohne Antworttext. Vorher konnte etwa ein fehlgeschlagenes Löschen ohne Antworttext als Erfolg gemeldet werden. Anfragen an die sevdesk API brechen nach 30 Sekunden ab. Fehlermeldungen nennen Status und Antworttext bzw. die Ursache eines Netzwerkfehlers.
 - Der Server kündigt `tools.listChanged: false` an, weil sich die Tool-Liste zur Laufzeit nicht ändert.
+- Alle Tools tragen MCP-Annotations, und `MCP_READ_ONLY=true` beschränkt den Server auf lesende Tools.
+- Korrekturen an einzelnen Tools, abgeglichen mit der OpenAPI-Spezifikation von sevdesk (gegen die echte API noch nicht geprüft):
+  - `mark_invoice_as_sent` sendet `sendType` und `sendDraft` im JSON-Body statt als Query-Parameter. `sendType` ist jetzt Pflicht, `sendDraft` ist standardmäßig `false`.
+  - `upload_voucher_file` lädt die Datei als `multipart/form-data` im Feld `file` hoch. Die Parameter `voucherId` und `creditDebit` entfallen, weil der Endpunkt sie nicht kennt und die Datei nur temporär ablegt.
+  - `list_transactions` erwartet `startDate` und `endDate` als ISO-8601-Datum oder -Zeitpunkt statt als Unix-Zeitstempel.
+  - `list_invoices` und `list_vouchers` erwarten `startDate` und `endDate` als ganze Zahl (Unix-Zeitstempel in Sekunden) statt als Text.
+  - `list_check_accounts` gibt `limit` und `offset` an die API weiter.
+  - `get_check_account_balance` erwartet `date` im Format `YYYY-MM-DD` und verwendet standardmäßig das heutige Datum in Deutschland statt das UTC-Datum.
+  - IDs, `limit` und `offset` akzeptieren nur ganze Zahlen.
 
 ## Verfügbare Tools
+
+### Lesende und schreibende Tools
+
+Jedes Tool trägt MCP-Annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). Clients können damit etwa vor destruktiven Aufrufen nachfragen. Annotations sind Hinweise und kein Zugriffsschutz.
+
+- **Lesend** (19 Tools): alle `list_*`- und `get_*`-Tools.
+- **Anlegend**: `create_contact`, `create_part`, `create_tag`, `create_transaction`, `upload_voucher_file`.
+- **Ändernd oder löschend** (`destructiveHint: true`): `update_contact`, `delete_contact`, `update_part`, `update_tag`, `delete_tag`, `mark_invoice_as_sent`, `book_invoice`, `cancel_invoice`, `book_voucher` und `send_invoice_by_email`, das zusätzlich eine E-Mail außerhalb von sevdesk verschickt (`openWorldHint: true`).
+
+Mit `MCP_READ_ONLY=true` registriert der Server nur die lesenden Tools. Schreibende Tools erscheinen dann nicht in `tools/list` und lassen sich nicht aufrufen. So lässt sich etwa eine zweite, rein lesende Instanz mit eigenem Token betreiben.
+
 
 ### Kontakte
 
@@ -145,7 +166,7 @@ Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/ni
 | `get_invoice` | Einzelne Rechnung abrufen |
 | `get_invoice_pdf` | Rechnung als PDF abrufen |
 | `send_invoice_by_email` | Rechnung per E-Mail versenden |
-| `mark_invoice_as_sent` | Rechnung als versendet markieren |
+| `mark_invoice_as_sent` | Rechnung mit Versandart als versendet markieren |
 | `book_invoice` | Rechnung als bezahlt buchen |
 | `cancel_invoice` | Rechnung stornieren |
 
@@ -157,7 +178,7 @@ Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/ni
 | `get_voucher` | Einzelnen Beleg abrufen |
 | `book_voucher` | Beleg als bezahlt buchen |
 | `get_voucher_positions` | Belegpositionen abrufen |
-| `upload_voucher_file` | Belegdatei hochladen |
+| `upload_voucher_file` | Belegdatei als temporäre Datei hochladen (liefert den Dateinamen für die Belegerstellung) |
 
 ### Bankkonten
 
@@ -195,9 +216,10 @@ Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/ni
 
 ```bash
 npm test
+npm run typecheck
 ```
 
-Die Tests für den HTTP-Transport und den sevdesk-Client laufen ohne Netzwerkzugriff. Die API-Tests sprechen die echte sevdesk API an und laufen nur, wenn `SEVDESK_API_TOKEN` in einer `.env` gesetzt ist. Die Tag-Tests legen dabei Tags an und löschen sie wieder.
+`npm run typecheck` prüft den Quellcode und die Tests. Die Tests für HTTP-Transport, Server, Tools und den sevdesk-Client laufen ohne Netzwerkzugriff. Die API-Tests sprechen die echte sevdesk API an und laufen nur, wenn `SEVDESK_API_TOKEN` in einer `.env` gesetzt ist. Die Tag-Tests legen dabei Tags an und löschen sie wieder.
 
 ## API-Referenz
 
