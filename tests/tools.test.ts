@@ -130,8 +130,12 @@ describe("sevdesk-Tools", () => {
   it("sollte beim Abruf des Rechnungs-PDFs die Rechnung nicht als versendet markieren", async () => {
     const { client, requests } = recordingClient();
     await invoiceTools.get_invoice_pdf.handler(client, { invoiceId: 42 });
+    await invoiceTools.get_invoice_pdf.handler(client, { invoiceId: 42, download: true });
 
     expect(new URL(requests[0].url).searchParams.get("preventSendBy")).toBe("true");
+    expect(new URL(requests[0].url).searchParams.has("download")).toBe(false);
+    expect(new URL(requests[1].url).searchParams.get("download")).toBe("true");
+    expect(new URL(requests[1].url).searchParams.get("preventSendBy")).toBe("true");
   });
 
   it("sollte Buchungen mit den Typen und Datumsformaten der Spec senden", async () => {
@@ -175,7 +179,14 @@ describe("sevdesk-Tools", () => {
 
   it("sollte Artikelpreise als Zahlen senden", async () => {
     const { client, requests } = recordingClient();
-    await partTools.create_part.handler(client, { name: "Beratung", priceNet: 100, priceGross: 119, taxRate: 19 });
+    await partTools.create_part.handler(client, {
+      name: "Beratung",
+      partNumber: "B-1",
+      stock: 0,
+      priceNet: 100,
+      priceGross: 119,
+      taxRate: 19,
+    });
     await partTools.update_part.handler(client, { partId: 7, priceNet: 200, taxRate: 7 });
 
     expect(await requests[0].json()).toMatchObject({ priceNet: 100, priceGross: 119, taxRate: 19 });
@@ -226,6 +237,10 @@ describe("Eingabeprüfung über MCP", () => {
     ["book_voucher", { voucherId: 1, amount: 1, date: "1767225600", type: "N", checkAccountId: 5 }],
     ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31T00:00:00Z" }],
     ["list_contacts", { depth: "2" }],
+    ["book_invoice", { invoiceId: 1, amount: 1, date: "1767225600", type: "N", checkAccountId: 5 }],
+    ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31T00:00:00Z", payeePayerName: "X", status: 500 }],
+    ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31", payeePayerName: "X" }],
+    ["create_part", { name: "Beratung", taxRate: 19 }],
   ])("sollte %s mit %j ablehnen, ohne sevdesk aufzurufen", async (name, args) => {
     const { client, requests, close } = await connect();
     try {
@@ -240,8 +255,25 @@ describe("Eingabeprüfung über MCP", () => {
 
   it.each([
     ["list_transactions", { checkAccountId: 5, startDate: "2026-01-31T00:00:00Z", endDate: "2026-01-31T23:59:59+01:00" }],
+    ["list_transactions", { checkAccountId: 5, startDate: "2026-01-31T00:00:00+01:00" }],
     ["get_check_account_balance", { checkAccountId: 5, date: "2026-02-28" }],
-  ])("sollte %s mit gültigen Datumsangaben %j annehmen", async (name, args) => {
+    ["book_invoice", { invoiceId: 1, amount: 119, date: 1767225600, type: "FULL_PAYMENT", checkAccountId: 5 }],
+    ["book_invoice", { invoiceId: 1, amount: 5, date: 1767225600, type: "MTC", checkAccountId: 5 }],
+    ["book_voucher", { voucherId: 1, amount: 1, date: "2026-01-31T00:00:00+01:00", type: "FULL_PAYMENT", checkAccountId: 5 }],
+    ["book_voucher", { voucherId: 1, amount: 1, date: "2026-01-31T00:00:00Z", type: "MTC", checkAccountId: 5 }],
+    [
+      "create_transaction",
+      {
+        checkAccountId: 5,
+        amount: 1,
+        valueDate: "2026-01-31T00:00:00+01:00",
+        entryDate: "2026-01-31T08:00:00+01:00",
+        payeePayerName: "X",
+        status: 400,
+      },
+    ],
+    ["create_part", { name: "Beratung", partNumber: "B-1", stock: 0, taxRate: 19 }],
+  ])("sollte %s mit gültigen Angaben %j annehmen", async (name, args) => {
     const { client, requests, close } = await connect();
     try {
       const result = await client.callTool({ name, arguments: args });

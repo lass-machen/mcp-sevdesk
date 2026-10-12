@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { SevdeskClient } from "../client.js";
 
-// Line breaks and spaces are allowed between base64 characters, nothing else
+// Spaces, tabs and line breaks are allowed between base64 characters, nothing else
 function compactBase64(value: string): string {
   return value.replace(/[ \t\r\n]/g, "");
 }

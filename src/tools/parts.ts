@@ -51,23 +51,23 @@ export const partTools = {
     description: "Create a new part (product/service) in sevdesk",
     inputSchema: z.object({
       name: z.string().describe("Name of the part"),
-      partNumber: z.string().optional().describe("Part number"),
-      stock: z.number().optional().describe("Current stock quantity"),
+      partNumber: z.string().min(1).describe("Part number"),
+      stock: z.number().describe("Current stock quantity"),
       stockEnabled: z.boolean().optional().describe("Enable stock tracking"),
       unitId: z.number().int().positive().optional().describe("Unit ID (default: 1 for pieces)"),
       priceGross: z.number().optional().describe("Gross price"),
       priceNet: z.number().optional().describe("Net price"),
-      taxRate: z.number().optional().describe("Tax rate in percent (e.g., 19)"),
+      taxRate: z.number().describe("Tax rate in percent (e.g., 19)"),
     }),
     handler: async (client: SevdeskClient, params: {
       name: string;
-      partNumber?: string;
-      stock?: number;
+      partNumber: string;
+      stock: number;
       stockEnabled?: boolean;
       unitId?: number;
       priceGross?: number;
       priceNet?: number;
-      taxRate?: number;
+      taxRate: number;
     }) => {
       const { data, error } = await client.POST("/Part", {
         body: {
