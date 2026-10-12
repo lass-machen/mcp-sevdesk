@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
 import { SevdeskRequestError, type SevdeskClient } from "./client.js";
+import { toolAnnotations } from "./tool-annotations.js";
 import {
   contactTools,
   invoiceTools,
@@ -32,14 +33,19 @@ export const SERVER_INFO = {
   version: "1.0.0",
 } as const;
 
+export interface ServerOptions {
+  /** Registers only tools annotated as read-only, so no write call is possible. */
+  readOnly?: boolean;
+}
+
 /**
- * Creates an MCP server with all sevdesk tools registered.
+ * Creates an MCP server with the sevdesk tools registered.
  *
  * Input validation, JSON schema generation and error reporting are handled by
  * the SDK: invalid arguments and handler errors are returned as tool results
  * with `isError: true`.
  */
-export function createServer(client: SevdeskClient): McpServer {
+export function createServer(client: SevdeskClient, options: ServerOptions = {}): McpServer {
   const server = new McpServer(SERVER_INFO, {
     capabilities: {
       tools: {},
@@ -47,11 +53,19 @@ export function createServer(client: SevdeskClient): McpServer {
   });
 
   for (const [name, tool] of Object.entries(allTools)) {
+    const annotations = toolAnnotations[name];
+    if (!annotations) {
+      throw new Error(`Tool ${name} has no entry in tool-annotations.ts`);
+    }
+    if (options.readOnly && annotations.readOnlyHint !== true) {
+      continue;
+    }
     server.registerTool(
       name,
       {
         description: tool.description,
         inputSchema: tool.inputSchema,
+        annotations,
       },
       async (args: unknown): Promise<CallToolResult> => {
         let result: unknown;

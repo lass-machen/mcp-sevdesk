@@ -2,8 +2,9 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createSevdeskClient } from "./client.js";
-import { createServer } from "./server.js";
-import { ConfigError, loadHttpConfig, startHttpServer } from "./http.js";
+import { createServer, type ServerOptions } from "./server.js";
+import { loadHttpConfig, startHttpServer } from "./http.js";
+import { ConfigError, parseBooleanEnv } from "./config.js";
 
 // Get API token from environment
 const API_TOKEN = process.env.SEVDESK_API_TOKEN;
@@ -22,9 +23,16 @@ const sevdeskClient = createSevdeskClient(API_TOKEN);
 
 // Start server
 async function main() {
+  const serverOptions: ServerOptions = {
+    readOnly: parseBooleanEnv("MCP_READ_ONLY", process.env.MCP_READ_ONLY),
+  };
+  if (serverOptions.readOnly) {
+    console.error("Read-only mode: only read-only tools are available");
+  }
+
   switch (TRANSPORT) {
     case "stdio": {
-      const server = createServer(sevdeskClient);
+      const server = createServer(sevdeskClient, serverOptions);
       const transport = new StdioServerTransport();
       await server.connect(transport);
       console.error("sevdesk MCP server running on stdio");
@@ -32,7 +40,7 @@ async function main() {
     }
     case "http": {
       const config = loadHttpConfig(process.env);
-      await startHttpServer(config, () => createServer(sevdeskClient));
+      await startHttpServer(config, () => createServer(sevdeskClient, serverOptions));
       break;
     }
     default:

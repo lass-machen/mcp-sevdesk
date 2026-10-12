@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { requireStaticBearerToken } from "./auth.js";
+import { ConfigError } from "./config.js";
 
 export const MCP_PATH = "/mcp";
 export const HEALTH_PATH = "/healthz";
@@ -42,12 +43,7 @@ export interface HttpConfig {
   bodyLimit: number;
 }
 
-export class ConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConfigError";
-  }
-}
+export { ConfigError };
 
 function parsePort(value: string | undefined): number {
   if (value === undefined || value.trim() === "") {
