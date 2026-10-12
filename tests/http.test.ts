@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { request, Agent, type IncomingMessage, type Server } from "node:http";
+import { request, Agent, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { once } from "node:events";
 import {
@@ -736,6 +736,143 @@ describe("closeHttpServer", () => {
     }
   });
 
+  interface QueuedCall {
+    started: Deferred;
+    release: Deferred;
+    taken: boolean;
+  }
+
+  // Each call waits until the test releases it; calls are served in arrival order
+  function queuedClient() {
+    const calls: QueuedCall[] = [];
+    const next = () => {
+      const call: QueuedCall = { started: deferred(), release: deferred(), taken: false };
+      calls.push(call);
+      return call;
+    };
+    const client = {
+      GET: async () => {
+        const call = calls.find((candidate) => !candidate.taken);
+        if (!call) {
+          throw new Error("Unexpected sevdesk call");
+        }
+        call.taken = true;
+        call.started.resolve();
+        await call.release.promise;
+        return { data: { objects: [] }, error: undefined };
+      },
+    } as unknown as SevdeskClient;
+    return { client, next };
+  }
+
+  function rawRequest(id: number): string {
+    const body = rpc("tools/call", { name: "list_check_accounts", arguments: {} }, id);
+    return (
+      `POST ${MCP_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer ${AUTH_TOKEN}\r\n` +
+      `Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n` +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+    );
+  }
+
+  async function rawConnection(port: number) {
+    const socket = connect(port, "127.0.0.1");
+    await once(socket, "connect");
+    let received = "";
+    socket.on("data", (chunk: Buffer) => (received += chunk.toString()));
+    socket.on("error", () => undefined);
+    return { socket, received: () => received, closed: once(socket, "close") };
+  }
+
+  it("sollte bei Pipelining beide beim Shutdown laufenden Anfragen beantworten", async () => {
+    const { client, next } = queuedClient();
+    const first = next();
+    const second = next();
+    const app = createHttpApp(baseConfig(), () => createServer(client));
+    const server = await listenHttp(app, 0, "127.0.0.1");
+    const { port } = server.address() as AddressInfo;
+    const connection = await rawConnection(port);
+
+    connection.socket.write(rawRequest(1) + rawRequest(2));
+    await first.started.promise;
+    await second.started.promise;
+    const closed = closeHttpServer(server);
+    first.release.resolve();
+    second.release.resolve();
+    await connection.closed;
+    await closed;
+
+    const received = connection.received();
+    expect(received.match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
+    expect(received).toContain('"id":1');
+    expect(received).toContain('"id":2');
+    // Only the last response announces the close, otherwise the second one would be lost
+    expect(received.match(/\r\nConnection: close\r\n/gi)).toHaveLength(1);
+    expect(received.lastIndexOf("Connection: close")).toBeGreaterThan(received.indexOf('"id":1'));
+  });
+
+  it("sollte eine nach Shutdown-Beginn gepipelinte Anfrage noch beantworten", async () => {
+    const { client, next } = queuedClient();
+    const first = next();
+    const second = next();
+    const app = createHttpApp(baseConfig(), () => createServer(client));
+    const server = await listenHttp(app, 0, "127.0.0.1");
+    const { port } = server.address() as AddressInfo;
+    const connection = await rawConnection(port);
+
+    connection.socket.write(rawRequest(1));
+    await first.started.promise;
+    const closed = closeHttpServer(server);
+    connection.socket.write(rawRequest(2));
+    await second.started.promise;
+    first.release.resolve();
+    second.release.resolve();
+    await connection.closed;
+    await closed;
+
+    expect(connection.received().match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
+    expect(connection.received().match(/\r\nConnection: close\r\n/gi)).toHaveLength(1);
+  });
+
+  it("sollte Anfragen nach einem schon gesendeten Connection: close nicht mehr ausführen", async () => {
+    // A large first response is still being sent when the second request arrives on the same connection
+    let calls = 0;
+    const first = blockingClient({ objects: "x".repeat(32 * 1024 * 1024) });
+    const client = {
+      GET: async () => {
+        calls += 1;
+        return (first.client as unknown as { GET: () => Promise<unknown> }).GET();
+      },
+    } as unknown as SevdeskClient;
+    const app = createHttpApp(baseConfig(), () => createServer(client));
+    const server = await listenHttp(app, 0, "127.0.0.1");
+    const { port } = server.address() as AddressInfo;
+    const connection = await rawConnection(port);
+
+    const serverResponses: ServerResponse[] = [];
+    server.on("request", (_req, res) => serverResponses.push(res));
+
+    // Do not read, so the large first response cannot be delivered and stays unfinished
+    connection.socket.pause();
+    connection.socket.write(rawRequest(1));
+    await first.started.promise;
+    const closed = closeHttpServer(server);
+    first.release.resolve();
+    // The first response has sent its headers, including "Connection: close"
+    await vi.waitFor(() => expect(serverResponses[0]?.headersSent).toBe(true), { timeout: 10_000 });
+    connection.socket.write(rawRequest(2));
+    await vi.waitFor(() => expect(serverResponses).toHaveLength(2), { timeout: 10_000 });
+    // Give a wrongly started handler the chance to reach sevdesk
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    connection.socket.resume();
+    await connection.closed;
+    await closed;
+
+    expect(connection.received().match(/HTTP\/1\.1 200 OK/g)).toHaveLength(1);
+    expect(connection.received()).toContain("Connection: close");
+    // The second request was never processed, so nothing ran without a response
+    expect(calls).toBe(1);
+  }, 30_000);
+
   it("sollte bei Pipelining alle Antworten einer Verbindung ausliefern", async () => {
     // First request answers immediately, the second one only after shutdown has started
     let calls = 0;
@@ -804,6 +941,14 @@ describe("closeHttpServer", () => {
     } finally {
       await closeHttpServer(first);
     }
+  });
+
+  it("sollte eine nicht vorhandene Adresse als Konfigurationsfehler melden", async () => {
+    // 192.0.2.1 is reserved for documentation (RFC 5737) and never assigned to this host
+    const app = createHttpApp(baseConfig(), () => createServer(fakeClient));
+    const error = await listenHttp(app, 0, "192.0.2.1").catch((e) => e);
+    expect(error).toBeInstanceOf(ConfigError);
+    expect(error.message).toContain("(EADDRNOTAVAIL)");
   });
 
   it("sollte Server ohne listenHttp ablehnen", async () => {

@@ -1,4 +1,4 @@
-import type { Server as HttpServer, ServerResponse } from "node:http";
+import type { Server as HttpServer, IncomingMessage, ServerResponse } from "node:http";
 import { Server as NetServer, type Socket } from "node:net";
 import express, { type ErrorRequestHandler, type Express, type RequestHandler } from "express";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -234,6 +234,13 @@ export function createHttpApp(config: HttpConfig, createMcpServer: () => McpServ
   const app = express();
   app.disable("x-powered-by");
 
+  // Requests that can never be answered during shutdown are not processed at all (see listenHttp)
+  app.use((req: TrackedRequest, _res, next) => {
+    if (!req[UNANSWERABLE]) {
+      next();
+    }
+  });
+
   // Liveness probe for container health checks; reveals nothing but "ok".
   // Registered before all checks so it works with any Host header.
   app.get(HEALTH_PATH, (_req, res) => {
@@ -285,23 +292,43 @@ export function createHttpApp(config: HttpConfig, createMcpServer: () => McpServ
 
 interface ConnectionTracking {
   sockets: Set<Socket>;
-  /** Number of requests per socket whose response has not finished yet (more than one when pipelining). */
-  busy: Map<Socket, number>;
-  /** Responses that have not finished yet. */
-  pending: Set<ServerResponse>;
+  /** Unfinished responses per socket in request order (more than one when pipelining). */
+  pending: Map<Socket, ServerResponse[]>;
+  /** Responses that were given "Connection: close". */
+  announced: WeakSet<ServerResponse>;
   closing: boolean;
 }
 
-// Tells the client not to send further requests on a connection that is about to close
-function announceClose(res: ServerResponse) {
-  if (!res.headersSent) {
-    res.setHeader("Connection", "close");
-  }
-}
-
-const LISTEN_ERROR_CODES = new Set(["EADDRINUSE", "EADDRNOTAVAIL", "EACCES"]);
-
 const connectionTracking = new WeakMap<HttpServer, ConnectionTracking>();
+
+/** Marks requests that arrive on a connection whose close was already announced. */
+const UNANSWERABLE = Symbol("unanswerable");
+
+type TrackedRequest = IncomingMessage & { [UNANSWERABLE]?: boolean };
+
+const LISTEN_ERROR_CODES = new Set(["EADDRINUSE", "EADDRNOTAVAIL", "EACCES", "EPERM", "ENOTFOUND", "EAI_AGAIN"]);
+
+/**
+ * Gives the last unfinished response of a connection "Connection: close", so
+ * the client does not reuse a connection that is about to be closed. Only the
+ * last one: Node closes the connection right after a response with that
+ * header, so with pipelining any response behind it would be lost. Earlier
+ * responses whose headers are not sent yet lose the header again.
+ */
+function announceClose(tracking: ConnectionTracking, responses: ServerResponse[]): void {
+  responses.forEach((res, index) => {
+    if (res.headersSent) {
+      return;
+    }
+    if (index === responses.length - 1) {
+      res.setHeader("Connection", "close");
+      tracking.announced.add(res);
+    } else if (tracking.announced.has(res)) {
+      res.removeHeader("Connection");
+      tracking.announced.delete(res);
+    }
+  });
+}
 
 /**
  * Starts listening and tracks connections for closeHttpServer().
@@ -325,32 +352,41 @@ export async function listenHttp(app: Express, port: number, host: string): Prom
   httpServer.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
   httpServer.headersTimeout = HEADERS_TIMEOUT_MS;
 
-  const tracking: ConnectionTracking = { sockets: new Set(), busy: new Map(), pending: new Set(), closing: false };
+  const tracking: ConnectionTracking = {
+    sockets: new Set(),
+    pending: new Map(),
+    announced: new WeakSet(),
+    closing: false,
+  };
   connectionTracking.set(httpServer, tracking);
 
   httpServer.on("connection", (socket: Socket) => {
     tracking.sockets.add(socket);
     socket.once("close", () => {
       tracking.sockets.delete(socket);
-      tracking.busy.delete(socket);
+      tracking.pending.delete(socket);
     });
   });
 
-  httpServer.on("request", (req, res) => {
+  // Registered before Express, which checks the UNANSWERABLE marker set here
+  httpServer.prependListener("request", (req: TrackedRequest, res) => {
     const socket = req.socket;
-    tracking.busy.set(socket, (tracking.busy.get(socket) ?? 0) + 1);
-    tracking.pending.add(res);
+    const responses = tracking.pending.get(socket) ?? [];
+    if (tracking.closing && responses.some((earlier) => earlier.headersSent && tracking.announced.has(earlier))) {
+      // The connection closes after that response, so this request could never be answered
+      req[UNANSWERABLE] = true;
+    }
+    responses.push(res);
+    tracking.pending.set(socket, responses);
     if (tracking.closing) {
-      announceClose(res);
+      announceClose(tracking, responses);
     }
     res.once("close", () => {
-      tracking.pending.delete(res);
-      const pending = (tracking.busy.get(socket) ?? 1) - 1;
-      if (pending > 0) {
-        tracking.busy.set(socket, pending);
+      responses.splice(responses.indexOf(res), 1);
+      if (responses.length > 0) {
         return;
       }
-      tracking.busy.delete(socket);
+      tracking.pending.delete(socket);
       if (tracking.closing) {
         socket.destroySoon();
       }
@@ -366,14 +402,17 @@ export async function listenHttp(app: Express, port: number, host: string): Prom
  *
  * Every connection is ended with destroySoon(), which waits until buffered
  * response data has been written: idle ones right away, busy ones as soon as
- * their last pending response has finished. Responses that are still pending
- * carry "Connection: close", so clients do not reuse the connection. http.Server#close() cannot be used here,
- * because it calls closeIdleConnections(), and Node already counts a
- * connection as idle once res.end() was called. That destroys connections
- * whose response is still being sent to a slow client and truncates the
- * response, so only the listening socket is closed via net.Server#close().
- * Node's internal connection checking interval keeps running afterwards; it is
- * unref'd and does not keep the process alive.
+ * their last unfinished response has finished. That response carries
+ * "Connection: close" unless its headers were already sent; a client that
+ * reuses such a connection afterwards sees it closed.
+ *
+ * http.Server#close() cannot be used here, because it calls
+ * closeIdleConnections(), and Node already counts a connection as idle once
+ * res.end() was called. That destroys connections whose response is still
+ * being sent to a slow client and truncates the response, so only the
+ * listening socket is closed via net.Server#close(). Node's internal
+ * connection checking interval keeps running afterwards; it is unref'd and
+ * does not keep the process alive.
  */
 export function closeHttpServer(httpServer: HttpServer): Promise<void> {
   const tracking = connectionTracking.get(httpServer);
@@ -381,8 +420,8 @@ export function closeHttpServer(httpServer: HttpServer): Promise<void> {
     return Promise.reject(new Error("closeHttpServer() requires a server started with listenHttp()"));
   }
   tracking.closing = true;
-  for (const res of tracking.pending) {
-    announceClose(res);
+  for (const responses of tracking.pending.values()) {
+    announceClose(tracking, responses);
   }
 
   return new Promise((resolve, reject) => {
@@ -394,7 +433,7 @@ export function closeHttpServer(httpServer: HttpServer): Promise<void> {
       resolve();
     });
     for (const socket of tracking.sockets) {
-      if (!tracking.busy.has(socket)) {
+      if (!tracking.pending.has(socket)) {
         socket.destroySoon();
       }
     }
