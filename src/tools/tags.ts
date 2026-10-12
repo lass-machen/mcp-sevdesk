@@ -5,7 +5,7 @@ export const tagTools = {
   list_tags: {
     description: "List all tags from sevdesk",
     inputSchema: z.object({
-      id: z.number().optional().describe("Filter by tag ID"),
+      id: z.number().int().positive().optional().describe("Filter by tag ID"),
       name: z.string().optional().describe("Filter by tag name"),
     }),
     handler: async (client: SevdeskClient, params: {
@@ -28,7 +28,7 @@ export const tagTools = {
   get_tag: {
     description: "Get a specific tag by ID",
     inputSchema: z.object({
-      tagId: z.number().describe("The ID of the tag to retrieve"),
+      tagId: z.number().int().positive().describe("The ID of the tag to retrieve"),
     }),
     handler: async (client: SevdeskClient, params: { tagId: number }) => {
       const { data, error } = await client.GET("/Tag/{tagId}", {
@@ -45,7 +45,7 @@ export const tagTools = {
     description: "Create a new tag and attach it to a document (Invoice, Voucher, Order, or CreditNote)",
     inputSchema: z.object({
       name: z.string().describe("Name of the tag"),
-      objectId: z.number().describe("ID of the document to tag"),
+      objectId: z.number().int().positive().describe("ID of the document to tag"),
       objectName: z.enum(["Invoice", "Voucher", "Order", "CreditNote"]).describe("Type of document to tag"),
     }),
     handler: async (client: SevdeskClient, params: {
@@ -70,7 +70,7 @@ export const tagTools = {
   update_tag: {
     description: "Update an existing tag's name",
     inputSchema: z.object({
-      tagId: z.number().describe("The ID of the tag to update"),
+      tagId: z.number().int().positive().describe("The ID of the tag to update"),
       name: z.string().describe("New name for the tag"),
     }),
     handler: async (client: SevdeskClient, params: {
@@ -93,7 +93,7 @@ export const tagTools = {
   delete_tag: {
     description: "Delete a tag from sevdesk",
     inputSchema: z.object({
-      tagId: z.number().describe("The ID of the tag to delete"),
+      tagId: z.number().int().positive().describe("The ID of the tag to delete"),
     }),
     handler: async (client: SevdeskClient, params: { tagId: number }) => {
       const { data, error } = await client.DELETE("/Tag/{tagId}", {

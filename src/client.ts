@@ -115,9 +115,10 @@ export function createSevdeskClient(apiToken: string, options: SevdeskClientOpti
 
   const client = createClient<paths>({
     baseUrl: BASE_URL,
+    // No global Content-Type: openapi-fetch sets application/json for JSON bodies and
+    // leaves it out for requests without a body and for multipart uploads (boundary)
     headers: {
       Authorization: apiToken,
-      "Content-Type": "application/json",
       Accept: "application/json",
     },
     // Abort requests that hang, including while the body is read, so they cannot block a tool call indefinitely

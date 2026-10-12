@@ -8,8 +8,8 @@ export const contactTools = {
       depth: z.number().optional().describe("Defines depth of sub-objects returned"),
       customerNumber: z.string().optional().describe("Filter by customer number"),
       name: z.string().optional().describe("Filter by contact name"),
-      limit: z.number().optional().describe("Limit the number of results (max 1000)"),
-      offset: z.number().optional().describe("Skip a number of results"),
+      limit: z.number().int().positive().optional().describe("Limit the number of results (max 1000)"),
+      offset: z.number().int().nonnegative().optional().describe("Skip a number of results"),
     }),
     handler: async (client: SevdeskClient, params: {
       depth?: number;
@@ -37,7 +37,7 @@ export const contactTools = {
   get_contact: {
     description: "Get a specific contact by ID from sevdesk",
     inputSchema: z.object({
-      contactId: z.number().describe("The ID of the contact to retrieve"),
+      contactId: z.number().int().positive().describe("The ID of the contact to retrieve"),
     }),
     handler: async (client: SevdeskClient, params: { contactId: number }) => {
       const { data, error } = await client.GET("/Contact/{contactId}", {
@@ -58,7 +58,7 @@ export const contactTools = {
       familyname: z.string().optional().describe("The family name of the contact person"),
       customerNumber: z.string().optional().describe("Customer number"),
       description: z.string().optional().describe("Description of the contact"),
-      categoryId: z.number().describe("Category ID (3 = customer, 4 = supplier, 28 = partner)"),
+      categoryId: z.number().int().positive().describe("Category ID (3 = customer, 4 = supplier, 28 = partner)"),
     }),
     handler: async (client: SevdeskClient, params: {
       name?: string;
@@ -89,7 +89,7 @@ export const contactTools = {
   update_contact: {
     description: "Update an existing contact in sevdesk",
     inputSchema: z.object({
-      contactId: z.number().describe("The ID of the contact to update"),
+      contactId: z.number().int().positive().describe("The ID of the contact to update"),
       name: z.string().optional().describe("The name of the contact"),
       surename: z.string().optional().describe("The surname"),
       familyname: z.string().optional().describe("The family name"),
@@ -119,7 +119,7 @@ export const contactTools = {
   delete_contact: {
     description: "Delete a contact from sevdesk",
     inputSchema: z.object({
-      contactId: z.number().describe("The ID of the contact to delete"),
+      contactId: z.number().int().positive().describe("The ID of the contact to delete"),
     }),
     handler: async (client: SevdeskClient, params: { contactId: number }) => {
       const { data, error } = await client.DELETE("/Contact/{contactId}", {

@@ -7,8 +7,8 @@ export const partTools = {
     inputSchema: z.object({
       partNumber: z.string().optional().describe("Filter by part number"),
       name: z.string().optional().describe("Filter by part name"),
-      limit: z.number().optional().describe("Limit the number of results"),
-      offset: z.number().optional().describe("Skip a number of results"),
+      limit: z.number().int().positive().optional().describe("Limit the number of results"),
+      offset: z.number().int().nonnegative().optional().describe("Skip a number of results"),
     }),
     handler: async (client: SevdeskClient, params: {
       partNumber?: string;
@@ -34,7 +34,7 @@ export const partTools = {
   get_part: {
     description: "Get a specific part by ID",
     inputSchema: z.object({
-      partId: z.number().describe("The ID of the part to retrieve"),
+      partId: z.number().int().positive().describe("The ID of the part to retrieve"),
     }),
     handler: async (client: SevdeskClient, params: { partId: number }) => {
       const { data, error } = await client.GET("/Part/{partId}", {
@@ -54,7 +54,7 @@ export const partTools = {
       partNumber: z.string().optional().describe("Part number"),
       stock: z.number().optional().describe("Current stock quantity"),
       stockEnabled: z.boolean().optional().describe("Enable stock tracking"),
-      unitId: z.number().optional().describe("Unit ID (default: 1 for pieces)"),
+      unitId: z.number().int().positive().optional().describe("Unit ID (default: 1 for pieces)"),
       priceGross: z.number().optional().describe("Gross price"),
       priceNet: z.number().optional().describe("Net price"),
       taxRate: z.number().optional().describe("Tax rate in percent (e.g., 19)"),
@@ -91,7 +91,7 @@ export const partTools = {
   update_part: {
     description: "Update an existing part in sevdesk",
     inputSchema: z.object({
-      partId: z.number().describe("The ID of the part to update"),
+      partId: z.number().int().positive().describe("The ID of the part to update"),
       name: z.string().optional().describe("Name of the part"),
       partNumber: z.string().optional().describe("Part number"),
       stock: z.number().optional().describe("Current stock quantity"),
@@ -134,7 +134,7 @@ export const partTools = {
   get_part_stock: {
     description: "Get the current stock of a part",
     inputSchema: z.object({
-      partId: z.number().describe("The ID of the part"),
+      partId: z.number().int().positive().describe("The ID of the part"),
     }),
     handler: async (client: SevdeskClient, params: { partId: number }) => {
       const { data, error } = await client.GET("/Part/{partId}/getStock", {

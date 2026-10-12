@@ -7,16 +7,16 @@ export const invoiceTools = {
     inputSchema: z.object({
       status: z.enum(["100", "200", "1000"]).optional().describe("Invoice status: 100=Draft, 200=Open, 1000=Paid"),
       invoiceNumber: z.string().optional().describe("Filter by invoice number"),
-      startDate: z.string().optional().describe("Filter by start date (Unix timestamp)"),
-      endDate: z.string().optional().describe("Filter by end date (Unix timestamp)"),
-      limit: z.number().optional().describe("Limit the number of results"),
-      offset: z.number().optional().describe("Skip a number of results"),
+      startDate: z.number().int().nonnegative().optional().describe("Filter by start date (Unix timestamp in seconds)"),
+      endDate: z.number().int().nonnegative().optional().describe("Filter by end date (Unix timestamp in seconds)"),
+      limit: z.number().int().positive().optional().describe("Limit the number of results"),
+      offset: z.number().int().nonnegative().optional().describe("Skip a number of results"),
     }),
     handler: async (client: SevdeskClient, params: {
       status?: "100" | "200" | "1000";
       invoiceNumber?: string;
-      startDate?: string;
-      endDate?: string;
+      startDate?: number;
+      endDate?: number;
       limit?: number;
       offset?: number;
     }) => {
@@ -25,8 +25,8 @@ export const invoiceTools = {
           query: {
             status: params.status ? Number(params.status) : undefined,
             invoiceNumber: params.invoiceNumber,
-            startDate: params.startDate ? Number(params.startDate) : undefined,
-            endDate: params.endDate ? Number(params.endDate) : undefined,
+            startDate: params.startDate,
+            endDate: params.endDate,
             limit: params.limit,
             offset: params.offset,
           } as any,
@@ -40,7 +40,7 @@ export const invoiceTools = {
   get_invoice: {
     description: "Get a specific invoice by ID from sevdesk",
     inputSchema: z.object({
-      invoiceId: z.number().describe("The ID of the invoice to retrieve"),
+      invoiceId: z.number().int().positive().describe("The ID of the invoice to retrieve"),
     }),
     handler: async (client: SevdeskClient, params: { invoiceId: number }) => {
       const { data, error } = await client.GET("/Invoice/{invoiceId}", {
@@ -56,7 +56,7 @@ export const invoiceTools = {
   get_invoice_pdf: {
     description: "Get the PDF of an invoice as base64 encoded string",
     inputSchema: z.object({
-      invoiceId: z.number().describe("The ID of the invoice"),
+      invoiceId: z.number().int().positive().describe("The ID of the invoice"),
       download: z.boolean().optional().describe("Whether to download the PDF"),
       preventSendBy: z.boolean().optional().describe("Prevent setting sendBy date"),
     }),
@@ -82,7 +82,7 @@ export const invoiceTools = {
   send_invoice_by_email: {
     description: "Send an invoice via email",
     inputSchema: z.object({
-      invoiceId: z.number().describe("The ID of the invoice to send"),
+      invoiceId: z.number().int().positive().describe("The ID of the invoice to send"),
       toEmail: z.string().describe("Recipient email address"),
       subject: z.string().describe("Email subject"),
       text: z.string().describe("Email body text"),
@@ -123,22 +123,23 @@ export const invoiceTools = {
   mark_invoice_as_sent: {
     description: "Mark an invoice as sent",
     inputSchema: z.object({
-      invoiceId: z.number().describe("The ID of the invoice"),
-      sendType: z.enum(["VPR", "VPDF", "VM", "VP"]).optional().describe("Send type: VPR=Print, VPDF=PDF, VM=Email, VP=Post"),
-      sendDraft: z.boolean().optional().describe("Send draft invoice"),
+      invoiceId: z.number().int().positive().describe("The ID of the invoice"),
+      sendType: z.enum(["VPR", "VPDF", "VM", "VP"]).describe("How the invoice was sent: VPR=Print, VPDF=PDF, VM=Email, VP=Post"),
+      sendDraft: z.boolean().optional().describe("Only create a draft of the send action. Default: false"),
     }),
     handler: async (client: SevdeskClient, params: {
       invoiceId: number;
-      sendType?: "VPR" | "VPDF" | "VM" | "VP";
+      sendType: "VPR" | "VPDF" | "VM" | "VP";
       sendDraft?: boolean;
     }) => {
+      // The API expects both fields in the JSON body, not as query parameters
       const { data, error } = await client.PUT("/Invoice/{invoiceId}/sendBy", {
         params: {
           path: { invoiceId: params.invoiceId },
-          query: {
-            sendType: params.sendType ?? "VM",
-            sendDraft: params.sendDraft,
-          } as any,
+        },
+        body: {
+          sendType: params.sendType,
+          sendDraft: params.sendDraft ?? false,
         },
       });
       if (error) throw new Error(JSON.stringify(error));
@@ -149,12 +150,12 @@ export const invoiceTools = {
   book_invoice: {
     description: "Book an invoice (mark it as paid)",
     inputSchema: z.object({
-      invoiceId: z.number().describe("The ID of the invoice to book"),
+      invoiceId: z.number().int().positive().describe("The ID of the invoice to book"),
       amount: z.number().describe("Amount to book"),
       date: z.string().describe("Booking date (Unix timestamp)"),
       type: z.enum(["N", "CB", "CF", "O", "OF", "MF", "C"]).describe("Booking type: N=Normal, CB=Cash discount, etc."),
-      checkAccountId: z.number().describe("ID of the check account"),
-      checkAccountTransactionId: z.number().optional().describe("ID of an existing transaction to link"),
+      checkAccountId: z.number().int().positive().describe("ID of the check account"),
+      checkAccountTransactionId: z.number().int().positive().optional().describe("ID of an existing transaction to link"),
       createFeed: z.boolean().optional().describe("Create a feed entry"),
     }),
     handler: async (client: SevdeskClient, params: {
@@ -195,7 +196,7 @@ export const invoiceTools = {
   cancel_invoice: {
     description: "Cancel an invoice (creates a cancellation invoice)",
     inputSchema: z.object({
-      invoiceId: z.number().describe("The ID of the invoice to cancel"),
+      invoiceId: z.number().int().positive().describe("The ID of the invoice to cancel"),
     }),
     handler: async (client: SevdeskClient, params: { invoiceId: number }) => {
       const { data, error } = await client.POST("/Invoice/{invoiceId}/cancelInvoice", {
