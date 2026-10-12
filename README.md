@@ -2,6 +2,8 @@
 
 Ein MCP (Model Context Protocol) Server für die sevdesk API. Ermöglicht die Integration von sevdesk-Buchhaltungsfunktionen in Claude und andere MCP-kompatible Anwendungen.
 
+Der Server läuft wahlweise lokal über stdio oder als entfernter Dienst über Streamable HTTP mit Bearer-Token-Authentifizierung.
+
 ## Features
 
 - **Kontakte**: Erstellen, lesen, aktualisieren und löschen von Kontakten (Kunden, Lieferanten, Partner)
@@ -9,8 +11,11 @@ Ein MCP (Model Context Protocol) Server für die sevdesk API. Ermöglicht die In
 - **Belege (Voucher)**: Verwalten von Eingangsrechnungen und Ausgaben
 - **Bankkonten**: Verwalten von Bankkonten und Transaktionen
 - **Artikel**: Verwalten von Produkten und Dienstleistungen
+- **Tags**: Tags anlegen, umbenennen, löschen und Dokumenten zuordnen
 
 ## Installation
+
+Voraussetzung ist Node.js 22.12 oder neuer.
 
 ```bash
 npm install
@@ -53,6 +58,72 @@ Füge den Server zu deiner Claude Desktop Konfiguration hinzu (`~/.config/claude
 ```bash
 SEVDESK_API_TOKEN="dein-token" npm start
 ```
+
+### Als HTTP-Server (Streamable HTTP)
+
+Mit `MCP_TRANSPORT=http` startet der Server einen HTTP-Endpunkt nach der MCP-Spezifikation (Streamable HTTP) unter `/mcp`. Jede Anfrage muss den Header `Authorization: Bearer <MCP_AUTH_TOKEN>` tragen, sonst antwortet der Server mit `401`.
+
+```bash
+SEVDESK_API_TOKEN="dein-token" \
+MCP_TRANSPORT=http \
+MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+npm start
+```
+
+| Variable | Pflicht | Standard | Beschreibung |
+|----------|---------|----------|--------------|
+| `SEVDESK_API_TOKEN` | ja | | sevdesk API-Token |
+| `MCP_TRANSPORT` | nein | `stdio` | `stdio` oder `http` |
+| `MCP_AUTH_TOKEN` | bei `http` | | Bearer-Token der Clients, mindestens 32 Zeichen aus `A-Z a-z 0-9 - . _ ~ + /`, optional gefolgt von `=` (RFC 6750). Muss sich vom sevdesk-Token unterscheiden. |
+| `MCP_HTTP_HOST` | nein | `127.0.0.1` | Bind-Adresse |
+| `MCP_HTTP_PORT` | nein | `3000` | Port |
+| `MCP_ALLOWED_HOSTS` | nein | | Kommagetrennte Hostnamen ohne Schema, Port und Pfad, die im `Host`-Header akzeptiert werden (Schutz vor DNS-Rebinding). Internationalisierte Domains in Punycode, IP-Adressen in kanonischer Schreibweise. Leer deaktiviert die Prüfung, außer bei Bindung an eine Loopback-Adresse: Dann gelten `localhost`, `127.0.0.1` und `[::1]`. |
+| `MCP_ALLOWED_ORIGINS` | nein | | Kommagetrennte http(s)-Origins wie `https://claude.ai`. Trägt eine Anfrage einen anderen `Origin`-Header, antwortet der Server mit `403`. Anfragen ohne `Origin` (alle Nicht-Browser-Clients) sind immer erlaubt. Leer deaktiviert die Prüfung. |
+| `MCP_HTTP_BODY_LIMIT` | nein | `10mb` | Maximale Größe einer Anfrage zwischen `1kb` und `100mb`. `upload_voucher_file` überträgt Dateien base64-kodiert. |
+
+Ungültige Werte führen beim Start zu einer Fehlermeldung und Exit-Code 1.
+
+Verhalten des HTTP-Transports:
+
+- **Zustandslos**: Jede Anfrage erhält eine eigene Server-Instanz, es gibt keine MCP-Sessions. Der Dienst kann daher ohne Session-Affinität neu gestartet oder hinter einem Proxy betrieben werden. Alle Methoden außer `POST` auf `/mcp` beantwortet der Server mit `405`.
+- **JSON-Antworten**: Antworten kommen als `application/json`, nicht als SSE-Stream. Clients müssen laut Spezifikation `Accept: application/json, text/event-stream` senden, sonst antwortet der Server mit `406`.
+- **Authentifizierung**: Bis auf den Health-Check verlangt jeder Pfad den Bearer-Token, auch unbekannte Pfade antworten ohne Token mit `401`.
+- **Health-Check**: `GET /healthz` antwortet ohne Authentifizierung mit `{"status":"ok"}` und gibt keine weiteren Informationen preis.
+- **Origin-Prüfung**: Standardmäßig aus. Der Endpunkt akzeptiert ausschließlich Bearer-Token, Browser können diesen Header ohne CORS-Freigabe nicht fremdseitig setzen, und der Server sendet keine CORS-Header. Ein festes Origin-Gate würde dagegen Clients wie claude.ai aussperren, die einen `Origin`-Header mitsenden. Wer die Prüfung braucht, setzt `MCP_ALLOWED_ORIGINS`. Diese Abwägung gilt nur, solange der Token ausschließlich im `Authorization`-Header akzeptiert wird und der Server keine CORS-Header sendet; Tests sichern beides ab.
+- **Shutdown**: Bei `SIGTERM` oder `SIGINT` nimmt der Server keine neuen Verbindungen mehr an, schließt ruhende Verbindungen, lässt laufende Anfragen bis zu 10 Sekunden zu Ende laufen und liefert ihre Antworten vollständig aus. Danach beendet er sich mit Exit-Code 0, nach Ablauf der 10 Sekunden mit Exit-Code 1. Ein zweites Signal beendet den Prozess sofort.
+
+Der Bearer-Token gewährt vollen Zugriff auf alle Tools und damit auf den sevdesk-Account, einschließlich schreibender Aktionen wie Rechnungsversand, Stornierung und Löschen von Kontakten. Den Token entsprechend behandeln und nur über HTTPS übertragen.
+
+### Deployment mit Docker Compose
+
+```bash
+cp .env.example .env   # SEVDESK_API_TOKEN und MCP_AUTH_TOKEN eintragen
+docker compose up -d --build
+```
+
+`compose.yaml` baut das Image, startet den Server im HTTP-Modus und härtet den Container (read-only Dateisystem, keine Linux-Capabilities, `no-new-privileges`, Speicherlimit). Das Speicherlimit von 256 MB reicht für sevdesk-Antworten bis etwa 20 MB; bei größeren Abfragen `limit` verwenden oder das Limit in der `compose.override.yaml` erhöhen. Ein Port wird bewusst nicht veröffentlicht. Die Anbindung an einen Reverse Proxy (Netzwerke, Labels, TLS) gehört in eine lokale `compose.override.yaml`, die Docker Compose automatisch einliest und die nicht versioniert wird. Für einen lokalen Test kann dieselbe Datei stattdessen einen Port veröffentlichen, etwa `ports: ["127.0.0.1:3000:3000"]`.
+
+Docker Compose interpoliert die Werte aus `.env`: Ein `$` leitet eine Variable ein und muss als `$$` geschrieben werden. Mit `openssl rand -hex 32` erzeugte Token sind davon nicht betroffen.
+
+### Client-Anbindung über HTTP
+
+Claude Code:
+
+```bash
+claude mcp add --transport http sevdesk https://mcp.example.org/mcp \
+  --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+```
+
+Andere Clients, die Streamable HTTP mit eigenen Headern unterstützen, werden analog mit URL und `Authorization`-Header konfiguriert. Verlangt der Reverse Proxy zusätzliche Query-Parameter, gehören sie in die URL.
+
+### Unterschiede zum Upstream-Projekt
+
+Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/nikolausm/mcp-sevdesk). Es ergänzt den HTTP-Transport und ändert dabei einige Details, die auch den stdio-Betrieb betreffen:
+
+- Die Tools werden über `McpServer.registerTool` des MCP-SDK registriert. Die JSON-Schemas erzeugt das SDK aus den Zod-Schemas. Dadurch enthalten sie jetzt auch die Beschreibungen optionaler Parameter, die der frühere eigene Konverter verlor, und ein `$schema`-Feld (JSON Schema draft-07).
+- Ungültige Argumente und unbekannte Tools meldet der Server, so wie das SDK es vorgibt, als Tool-Ergebnis mit `isError: true` statt als JSON-RPC-Fehler. Fehlermeldungen tragen nicht mehr das Präfix `Error: `.
+- Jede Antwort der sevdesk API mit einem Status außerhalb von 2xx gilt als Fehler, auch ohne Antworttext. Vorher konnte etwa ein fehlgeschlagenes Löschen ohne Antworttext als Erfolg gemeldet werden. Anfragen an die sevdesk API brechen nach 30 Sekunden ab. Fehlermeldungen nennen Status und Antworttext bzw. die Ursache eines Netzwerkfehlers.
+- Der Server kündigt `tools.listChanged: false` an, weil sich die Tool-Liste zur Laufzeit nicht ändert.
 
 ## Verfügbare Tools
 
@@ -108,6 +179,25 @@ SEVDESK_API_TOKEN="dein-token" npm start
 | `create_part` | Neuen Artikel erstellen |
 | `update_part` | Artikel aktualisieren |
 | `get_part_stock` | Lagerbestand abrufen |
+
+### Tags
+
+| Tool | Beschreibung |
+|------|-------------|
+| `list_tags` | Alle Tags auflisten |
+| `get_tag` | Einzelnen Tag abrufen |
+| `create_tag` | Tag anlegen und einem Dokument zuordnen |
+| `update_tag` | Tag umbenennen |
+| `delete_tag` | Tag löschen |
+| `list_tag_relations` | Zuordnungen von Tags zu Dokumenten auflisten |
+
+## Entwicklung
+
+```bash
+npm test
+```
+
+Die Tests für den HTTP-Transport und den sevdesk-Client laufen ohne Netzwerkzugriff. Die API-Tests sprechen die echte sevdesk API an und laufen nur, wenn `SEVDESK_API_TOKEN` in einer `.env` gesetzt ist. Die Tag-Tests legen dabei Tags an und löschen sie wieder.
 
 ## API-Referenz
 
