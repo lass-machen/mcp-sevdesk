@@ -3,6 +3,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createSevdeskClient } from "./client.js";
 import { createServer } from "./server.js";
+import { ConfigError, loadHttpConfig, startHttpServer } from "./http.js";
 
 // Get API token from environment
 const API_TOKEN = process.env.SEVDESK_API_TOKEN;
@@ -13,18 +14,37 @@ if (!API_TOKEN) {
   process.exit(1);
 }
 
+// Transport selection; stdio stays the default for local MCP clients
+const TRANSPORT = (process.env.MCP_TRANSPORT ?? "stdio").trim().toLowerCase();
+
 // Create sevdesk client
 const sevdeskClient = createSevdeskClient(API_TOKEN);
 
 // Start server
 async function main() {
-  const server = createServer(sevdeskClient);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("sevdesk MCP server running on stdio");
+  switch (TRANSPORT) {
+    case "stdio": {
+      const server = createServer(sevdeskClient);
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+      console.error("sevdesk MCP server running on stdio");
+      break;
+    }
+    case "http": {
+      const config = loadHttpConfig(process.env);
+      await startHttpServer(config, () => createServer(sevdeskClient));
+      break;
+    }
+    default:
+      throw new ConfigError(`Unknown MCP_TRANSPORT "${TRANSPORT}", expected "stdio" or "http"`);
+  }
 }
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  if (error instanceof ConfigError) {
+    console.error(`Configuration error: ${error.message}`);
+  } else {
+    console.error("Fatal error:", error);
+  }
   process.exit(1);
 });
