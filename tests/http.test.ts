@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { request, Agent, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { once } from "node:events";
@@ -606,6 +606,31 @@ describe("HTTP-Transport mit Origin-Validierung", () => {
 });
 
 describe("closeHttpServer", () => {
+  // Sockets and servers of a failed test are released right away instead of at worker exit
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0)) {
+      cleanup();
+    }
+  });
+
+  function track(server: Server): Server {
+    cleanups.push(() => {
+      server.closeAllConnections();
+      if (server.listening) {
+        server.close();
+      }
+    });
+    return server;
+  }
+
+  // Fails with a clear message instead of running into the 30s test timeout
+  function within<T>(promise: Promise<T>, what: string, ms = 5_000): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), ms)),
+    ]);
+  }
   interface Deferred {
     promise: Promise<void>;
     resolve: () => void;
@@ -664,7 +689,7 @@ describe("closeHttpServer", () => {
   it("sollte laufende Anfragen beenden lassen und die Verbindung danach schließen", async () => {
     const { client, started, release } = blockingClient();
     const app = createHttpApp(baseConfig(), () => createServer(client));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const { port } = server.address() as AddressInfo;
     const agent = new Agent({ keepAlive: true });
 
@@ -690,7 +715,7 @@ describe("closeHttpServer", () => {
     const big = { objects: "x".repeat(32 * 1024 * 1024) };
     const fastClient = { GET: async () => ({ data: big, error: undefined }) } as unknown as SevdeskClient;
     const app = createHttpApp(baseConfig(), () => createServer(fastClient));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const { port } = server.address() as AddressInfo;
     const agent = new Agent({ keepAlive: true });
 
@@ -714,7 +739,7 @@ describe("closeHttpServer", () => {
 
   it("sollte ruhende Keep-Alive-Verbindungen und Verbindungen ohne Anfrage sofort schließen", async () => {
     const app = createHttpApp(baseConfig(), () => createServer(fakeClient));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const { port } = server.address() as AddressInfo;
     const agent = new Agent({ keepAlive: true });
 
@@ -776,6 +801,7 @@ describe("closeHttpServer", () => {
 
   async function rawConnection(port: number) {
     const socket = connect(port, "127.0.0.1");
+    cleanups.push(() => socket.destroy());
     await once(socket, "connect");
     let received = "";
     socket.on("data", (chunk: Buffer) => (received += chunk.toString()));
@@ -788,18 +814,18 @@ describe("closeHttpServer", () => {
     const first = next();
     const second = next();
     const app = createHttpApp(baseConfig(), () => createServer(client));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const { port } = server.address() as AddressInfo;
     const connection = await rawConnection(port);
 
     connection.socket.write(rawRequest(1) + rawRequest(2));
-    await first.started.promise;
-    await second.started.promise;
+    await within(first.started.promise, "the first request to reach the handler");
+    await within(second.started.promise, "the second request to reach the handler");
     const closed = closeHttpServer(server);
     first.release.resolve();
     second.release.resolve();
-    await connection.closed;
-    await closed;
+    await within(connection.closed, "the connection to close");
+    await within(closed, "the server to close");
 
     const received = connection.received();
     expect(received.match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
@@ -815,19 +841,19 @@ describe("closeHttpServer", () => {
     const first = next();
     const second = next();
     const app = createHttpApp(baseConfig(), () => createServer(client));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const { port } = server.address() as AddressInfo;
     const connection = await rawConnection(port);
 
     connection.socket.write(rawRequest(1));
-    await first.started.promise;
+    await within(first.started.promise, "the first request to reach the handler");
     const closed = closeHttpServer(server);
     connection.socket.write(rawRequest(2));
-    await second.started.promise;
+    await within(second.started.promise, "the second request to reach the handler");
     first.release.resolve();
     second.release.resolve();
-    await connection.closed;
-    await closed;
+    await within(connection.closed, "the connection to close");
+    await within(closed, "the server to close");
 
     expect(connection.received().match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
     expect(connection.received().match(/\r\nConnection: close\r\n/gi)).toHaveLength(1);
@@ -864,7 +890,7 @@ describe("closeHttpServer", () => {
     const first = next();
     const second = next();
     const app = createHttpApp(baseConfig(), () => createServer(client));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const serverResponses: ServerResponse[] = [];
     server.on("request", (_req, res) => serverResponses.push(res));
     const { port } = server.address() as AddressInfo;
@@ -873,16 +899,16 @@ describe("closeHttpServer", () => {
     // The large first response sends its headers (keep-alive) before shutdown and stays unfinished
     connection.socket.pause();
     connection.socket.write(rawRequest(1));
-    await first.started.promise;
+    await within(first.started.promise, "the first request to reach the handler");
     first.release.resolve();
     await vi.waitFor(() => expect(serverResponses[0]?.headersSent).toBe(true), { timeout: 10_000 });
     const closed = closeHttpServer(server);
     connection.socket.write(rawRequest(2));
-    await second.started.promise;
+    await within(second.started.promise, "the second request to reach the handler");
     second.release.resolve();
     connection.socket.resume();
-    await connection.closed;
-    await closed;
+    await within(connection.closed, "the connection to close");
+    await within(closed, "the server to close");
 
     const received = connection.received();
     expect(received.match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
@@ -896,7 +922,7 @@ describe("closeHttpServer", () => {
     const second = next();
     const third = next();
     const app = createHttpApp(baseConfig(), () => createServer(client));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const serverResponses: ServerResponse[] = [];
     server.on("request", (_req, res) => serverResponses.push(res));
     const { port } = server.address() as AddressInfo;
@@ -904,22 +930,22 @@ describe("closeHttpServer", () => {
 
     connection.socket.pause();
     connection.socket.write(rawRequest(1));
-    await first.started.promise;
+    await within(first.started.promise, "the first request to reach the handler");
     const closed = closeHttpServer(server);
     // The announcement moves from the first to the second response
     connection.socket.write(rawRequest(2));
-    await second.started.promise;
+    await within(second.started.promise, "the second request to reach the handler");
     // The first response sends its headers without the announcement and stays unfinished
     first.release.resolve();
     await vi.waitFor(() => expect(serverResponses[0]?.headersSent).toBe(true), { timeout: 10_000 });
     // A third request must still be processed and take over the announcement
     connection.socket.write(rawRequest(3));
-    await third.started.promise;
+    await within(third.started.promise, "the third request to reach the handler");
     second.release.resolve();
     third.release.resolve();
     connection.socket.resume();
-    await connection.closed;
-    await closed;
+    await within(connection.closed, "the connection to close");
+    await within(closed, "the server to close");
 
     const received = connection.received();
     expect(count()).toBe(3);
@@ -928,8 +954,8 @@ describe("closeHttpServer", () => {
     expect(received.lastIndexOf("Connection: close")).toBeGreaterThan(received.indexOf('"id":2'));
   }, 30_000);
 
-  it("sollte Anfragen nach einem schon gesendeten Connection: close nicht mehr ausführen", async () => {
-    // A large first response is still being sent when the second request arrives on the same connection
+  it.each([1, 2])("sollte %i späte Anfrage(n) nach einem schon gesendeten Connection: close nicht ausführen", async (late) => {
+    // A large first response is still being sent when further requests arrive on the same connection
     let calls = 0;
     const first = blockingClient({ objects: "x".repeat(32 * 1024 * 1024) });
     const client = {
@@ -939,7 +965,7 @@ describe("closeHttpServer", () => {
       },
     } as unknown as SevdeskClient;
     const app = createHttpApp(baseConfig(), () => createServer(client));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const { port } = server.address() as AddressInfo;
     const connection = await rawConnection(port);
 
@@ -949,22 +975,22 @@ describe("closeHttpServer", () => {
     // Do not read, so the large first response cannot be delivered and stays unfinished
     connection.socket.pause();
     connection.socket.write(rawRequest(1));
-    await first.started.promise;
+    await within(first.started.promise, "the first request to reach the handler");
     const closed = closeHttpServer(server);
     first.release.resolve();
     // The first response has sent its headers, including "Connection: close"
     await vi.waitFor(() => expect(serverResponses[0]?.headersSent).toBe(true), { timeout: 10_000 });
-    connection.socket.write(rawRequest(2));
-    await vi.waitFor(() => expect(serverResponses).toHaveLength(2), { timeout: 10_000 });
+    connection.socket.write(Array.from({ length: late }, (_, index) => rawRequest(index + 2)).join(""));
+    await vi.waitFor(() => expect(serverResponses).toHaveLength(1 + late), { timeout: 10_000 });
     // Give a wrongly started handler the chance to reach sevdesk
     await new Promise((resolve) => setTimeout(resolve, 200));
     connection.socket.resume();
-    await connection.closed;
-    await closed;
+    await within(connection.closed, "the connection to close");
+    await within(closed, "the server to close");
 
     expect(connection.received().match(/HTTP\/1\.1 200 OK/g)).toHaveLength(1);
     expect(connection.received()).toContain("Connection: close");
-    // The second request was never processed, so nothing ran without a response
+    // The late requests were never processed, so nothing ran without a response
     expect(calls).toBe(1);
   }, 30_000);
 
@@ -980,7 +1006,7 @@ describe("closeHttpServer", () => {
       },
     } as unknown as SevdeskClient;
     const app = createHttpApp(baseConfig(), () => createServer(client));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     const { port } = server.address() as AddressInfo;
 
     const socket = connect(port, "127.0.0.1");
@@ -999,7 +1025,7 @@ describe("closeHttpServer", () => {
     // Both requests in one write, as a pipelining client sends them
     socket.write(raw(1) + raw(2));
 
-    await second.started.promise;
+    await within(second.started.promise, "the second request to reach the handler");
     const closed = closeHttpServer(server);
     second.release.resolve();
     await ended;
@@ -1014,7 +1040,7 @@ describe("closeHttpServer", () => {
 
   it("sollte Keep-Alive- und Header-Timeout passend zu Traefik setzen", async () => {
     const app = createHttpApp(baseConfig(), () => createServer(fakeClient));
-    const server = await listenHttp(app, 0, "127.0.0.1");
+    const server = track(await listenHttp(app, 0, "127.0.0.1"));
     try {
       expect(server.keepAliveTimeout).toBe(95_000);
       expect(server.headersTimeout).toBe(100_000);
