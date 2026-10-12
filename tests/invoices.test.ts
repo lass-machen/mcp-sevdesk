@@ -80,7 +80,7 @@ describe("Invoices API (lesend)", () => {
         const invoiceId = Number(listResult.objects[0].id);
 
         try {
-          // The tool always sends preventSendBy=true, so the invoice is not marked as sent
+          // The tool always sends preventSendBy=true, which is meant to keep the invoice from being marked as sent
           const result = defined(await invoiceTools.get_invoice_pdf.handler(client, { invoiceId }));
 
           expect(result).toBeDefined();

@@ -127,7 +127,7 @@ describe("sevdesk-Tools", () => {
     expect([...form.keys()]).toEqual(["file"]);
   });
 
-  it("sollte beim Abruf des Rechnungs-PDFs die Rechnung nicht als versendet markieren", async () => {
+  it("sollte beim Abruf des Rechnungs-PDFs immer preventSendBy=true senden", async () => {
     const { client, requests } = recordingClient();
     await invoiceTools.get_invoice_pdf.handler(client, { invoiceId: 42 });
     await invoiceTools.get_invoice_pdf.handler(client, { invoiceId: 42, download: true });
@@ -254,6 +254,8 @@ describe("Eingabeprüfung über MCP", () => {
     ["book_invoice", { invoiceId: 1, amount: 1, date: "1767225600", type: "N", checkAccountId: 5 }],
     ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31T00:00:00Z", payeePayerName: "X", status: 500 }],
     ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31", payeePayerName: "X" }],
+    ["create_part", { partNumber: "B-1", stock: 0, taxRate: 19 }],
+    ["create_part", { name: "", partNumber: "B-1", stock: 0, taxRate: 19 }],
     ["create_part", { name: "Beratung", stock: 0, taxRate: 19 }],
     ["create_part", { name: "Beratung", partNumber: "B-1", taxRate: 19 }],
     ["create_part", { name: "Beratung", partNumber: "B-1", stock: 0 }],

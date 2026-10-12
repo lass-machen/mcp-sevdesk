@@ -50,7 +50,7 @@ export const partTools = {
   create_part: {
     description: "Create a new part (product/service) in sevdesk",
     inputSchema: z.object({
-      name: z.string().describe("Name of the part"),
+      name: z.string().min(1).describe("Name of the part"),
       partNumber: z.string().min(1).describe("Part number"),
       stock: z.number().describe("Current stock quantity"),
       stockEnabled: z.boolean().optional().describe("Enable stock tracking"),

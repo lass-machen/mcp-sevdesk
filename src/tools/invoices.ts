@@ -55,8 +55,10 @@ export const invoiceTools = {
 
   get_invoice_pdf: {
     description:
-      "Get the PDF of an invoice as base64 encoded string. Sends preventSendBy=true so that the " +
-      "invoice is not marked as sent; use mark_invoice_as_sent for that.",
+      "Get the PDF of an invoice. Returns the sevdesk response, which contains the base64 encoded " +
+      "file. The request sets preventSendBy=true, which is meant to keep sevdesk from marking the " +
+      "invoice as sent (not verified against the live API); use mark_invoice_as_sent to mark an " +
+      "invoice as sent.",
     inputSchema: z.object({
       invoiceId: z.number().int().positive().describe("The ID of the invoice"),
       download: z.boolean().optional().describe("Whether to download the PDF"),
