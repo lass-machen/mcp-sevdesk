@@ -192,8 +192,8 @@ describe("MCP_READ_ONLY (Kindprozess)", () => {
     await exitOf(child);
   });
 
-  it("sollte über stdio nur lesende Tools anbieten", async () => {
-    const { child, stdout } = spawnEntryPoint({ MCP_READ_ONLY: "1" });
+  async function listToolsOverStdio(env: Record<string, string>): Promise<number> {
+    const { child, stdout } = spawnEntryPoint(env);
     const messages = [
       {
         jsonrpc: "2.0",
@@ -211,10 +211,18 @@ describe("MCP_READ_ONLY (Kindprozess)", () => {
       .split("\n")
       .map((line) => JSON.parse(line))
       .find((message) => message.id === 2);
-    expect(response.result.tools).toHaveLength(19);
     child.stdin?.end();
     child.kill("SIGTERM");
     await exitOf(child);
+    return response.result.tools.length;
+  }
+
+  it("sollte über stdio nur lesende Tools anbieten", async () => {
+    expect(await listToolsOverStdio({ MCP_READ_ONLY: "1" })).toBe(19);
+  });
+
+  it("sollte über stdio ohne MCP_READ_ONLY alle Tools anbieten", async () => {
+    expect(await listToolsOverStdio({})).toBe(34);
   });
 
   it("sollte ungültige Werte mit Exit-Code 1 ablehnen", async () => {
