@@ -57,9 +57,8 @@ export const accountTools = {
     description: "Get the current balance of a check account",
     inputSchema: z.object({
       checkAccountId: z.number().int().positive().describe("The ID of the check account"),
-      date: z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/, "must be a date in the format YYYY-MM-DD")
+      date: z.iso
+        .date()
         .optional()
         .describe("Only consider transactions up to this date (YYYY-MM-DD). Default: today (Europe/Berlin)"),
     }),
@@ -84,14 +83,14 @@ export const accountTools = {
     description: "List all transactions of a check account",
     inputSchema: z.object({
       checkAccountId: z.number().int().positive().describe("The ID of the check account"),
-      startDate: z
-        .union([z.iso.date(), z.iso.datetime({ offset: true })])
+      startDate: z.iso
+        .datetime({ offset: true })
         .optional()
-        .describe("Only transactions from this point on (ISO 8601 date or date-time, e.g. 2026-01-31)"),
-      endDate: z
-        .union([z.iso.date(), z.iso.datetime({ offset: true })])
+        .describe("Only transactions from this point on (ISO 8601 date-time, e.g. 2026-01-01T00:00:00+01:00)"),
+      endDate: z.iso
+        .datetime({ offset: true })
         .optional()
-        .describe("Only transactions up to this point (ISO 8601 date or date-time, e.g. 2026-01-31)"),
+        .describe("Only transactions up to this point (ISO 8601 date-time, e.g. 2026-01-31T23:59:59+01:00)"),
       paymtPurpose: z.string().optional().describe("Filter by payment purpose"),
       isBooked: z.boolean().optional().describe("Filter by booked status"),
       limit: z.number().int().positive().optional().describe("Limit the number of results"),
@@ -146,12 +145,21 @@ export const accountTools = {
     inputSchema: z.object({
       checkAccountId: z.number().int().positive().describe("The ID of the check account"),
       amount: z.number().describe("Transaction amount (positive for credit, negative for debit)"),
-      valueDate: z.string().describe("Value date (ISO date string YYYY-MM-DD)"),
-      entryDate: z.string().optional().describe("Entry date (ISO date string YYYY-MM-DD)"),
+      valueDate: z.iso
+        .datetime({ offset: true })
+        .describe("Value date as ISO 8601 date-time, e.g. 2026-01-31T00:00:00+01:00"),
+      entryDate: z.iso
+        .datetime({ offset: true })
+        .optional()
+        .describe("Entry date as ISO 8601 date-time, e.g. 2026-01-31T00:00:00+01:00"),
       paymtPurpose: z.string().optional().describe("Payment purpose/description"),
-      payeePayerName: z.string().optional().describe("Name of payee or payer"),
+      payeePayerName: z.string().min(1).describe("Name of payee or payer"),
       payeePayerAcctNo: z.string().optional().describe("Account number of payee/payer"),
       payeePayerBankCode: z.string().optional().describe("Bank code of payee/payer"),
+      status: z
+        .union([z.literal(100), z.literal(200), z.literal(300), z.literal(400)])
+        .optional()
+        .describe("Status of the transaction: 100=Created, 200=Linked, 300=Private, 400=Booked. Default: 100"),
     }),
     handler: async (client: SevdeskClient, params: {
       checkAccountId: number;
@@ -159,9 +167,10 @@ export const accountTools = {
       valueDate: string;
       entryDate?: string;
       paymtPurpose?: string;
-      payeePayerName?: string;
+      payeePayerName: string;
       payeePayerAcctNo?: string;
       payeePayerBankCode?: string;
+      status?: 100 | 200 | 300 | 400;
     }) => {
       const { data, error } = await client.POST("/CheckAccountTransaction", {
         body: {
@@ -176,6 +185,8 @@ export const accountTools = {
           payeePayerName: params.payeePayerName,
           payeePayerAcctNo: params.payeePayerAcctNo,
           payeePayerBankCode: params.payeePayerBankCode,
+          // Required by the API
+          status: params.status ?? 100,
         } as any,
       });
       if (error) throw new Error(JSON.stringify(error));

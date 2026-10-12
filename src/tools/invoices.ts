@@ -54,23 +54,24 @@ export const invoiceTools = {
   },
 
   get_invoice_pdf: {
-    description: "Get the PDF of an invoice as base64 encoded string",
+    description:
+      "Get the PDF of an invoice as base64 encoded string. Does not mark the invoice as sent; " +
+      "use mark_invoice_as_sent for that.",
     inputSchema: z.object({
       invoiceId: z.number().int().positive().describe("The ID of the invoice"),
       download: z.boolean().optional().describe("Whether to download the PDF"),
-      preventSendBy: z.boolean().optional().describe("Prevent setting sendBy date"),
     }),
     handler: async (client: SevdeskClient, params: {
       invoiceId: number;
       download?: boolean;
-      preventSendBy?: boolean;
     }) => {
       const { data, error } = await client.GET("/Invoice/{invoiceId}/getPdf", {
         params: {
           path: { invoiceId: params.invoiceId },
           query: {
             download: params.download,
-            preventSendBy: params.preventSendBy,
+            // Without this, sevdesk marks the invoice as sent; reading a PDF must not change data
+            preventSendBy: true,
           },
         },
       });
@@ -152,8 +153,14 @@ export const invoiceTools = {
     inputSchema: z.object({
       invoiceId: z.number().int().positive().describe("The ID of the invoice to book"),
       amount: z.number().describe("Amount to book"),
-      date: z.string().describe("Booking date (Unix timestamp)"),
-      type: z.enum(["N", "CB", "CF", "O", "OF", "MF", "C"]).describe("Booking type: N=Normal, CB=Cash discount, etc."),
+      date: z.number().int().nonnegative().describe("Booking date (Unix timestamp in seconds)"),
+      type: z
+        .enum(["FULL_PAYMENT", "N", "CB", "CF", "O", "OF", "MTC"])
+        .describe(
+          "Booking type: FULL_PAYMENT=normal booking, N=partial booking, CB=reduced by cash discount (Skonto), " +
+            "CF=currency fluctuation (deprecated), O=reduced or higher for other reasons, " +
+            "OF=higher due to reminder charges, MTC=reduced by monetary traffic costs"
+        ),
       checkAccountId: z.number().int().positive().describe("ID of the check account"),
       checkAccountTransactionId: z.number().int().positive().optional().describe("ID of an existing transaction to link"),
       createFeed: z.boolean().optional().describe("Create a feed entry"),
@@ -161,8 +168,8 @@ export const invoiceTools = {
     handler: async (client: SevdeskClient, params: {
       invoiceId: number;
       amount: number;
-      date: string;
-      type: "N" | "CB" | "CF" | "O" | "OF" | "MF" | "C";
+      date: number;
+      type: "FULL_PAYMENT" | "N" | "CB" | "CF" | "O" | "OF" | "MTC";
       checkAccountId: number;
       checkAccountTransactionId?: number;
       createFeed?: boolean;

@@ -78,9 +78,9 @@ export const partTools = {
           unity: params.unitId
             ? { id: params.unitId, objectName: "Unity" }
             : { id: 1, objectName: "Unity" },
-          priceGross: params.priceGross?.toString(),
-          priceNet: params.priceNet?.toString(),
-          taxRate: params.taxRate?.toString(),
+          priceGross: params.priceGross,
+          priceNet: params.priceNet,
+          taxRate: params.taxRate,
         } as any,
       });
       if (error) throw new Error(JSON.stringify(error));
@@ -116,9 +116,9 @@ export const partTools = {
       if (updateData.partNumber) body.partNumber = updateData.partNumber;
       if (updateData.stock !== undefined) body.stock = updateData.stock;
       if (updateData.stockEnabled !== undefined) body.stockEnabled = updateData.stockEnabled;
-      if (updateData.priceGross !== undefined) body.priceGross = updateData.priceGross.toString();
-      if (updateData.priceNet !== undefined) body.priceNet = updateData.priceNet.toString();
-      if (updateData.taxRate !== undefined) body.taxRate = updateData.taxRate.toString();
+      if (updateData.priceGross !== undefined) body.priceGross = updateData.priceGross;
+      if (updateData.priceNet !== undefined) body.priceNet = updateData.priceNet;
+      if (updateData.taxRate !== undefined) body.taxRate = updateData.taxRate;
 
       const { data, error } = await client.PUT("/Part/{partId}", {
         params: {

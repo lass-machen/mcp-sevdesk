@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createSevdeskClient } from "../src/client.js";
@@ -6,6 +6,12 @@ import { createServer } from "../src/server.js";
 import { accountTools, todayInBerlin } from "../src/tools/accounts.js";
 import { invoiceTools } from "../src/tools/invoices.js";
 import { voucherTools } from "../src/tools/vouchers.js";
+import { contactTools } from "../src/tools/contacts.js";
+import { partTools } from "../src/tools/parts.js";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // Offline client that records the requests it would send to sevdesk
 function recordingClient() {
@@ -50,10 +56,13 @@ describe("sevdesk-Tools", () => {
   });
 
   it("sollte für den Kontostand standardmäßig das heutige Datum in Deutschland verwenden", async () => {
+    // 00:30 in Berlin, but still the previous day in UTC
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-11T22:30:00Z"));
     const { client, requests } = recordingClient();
     await accountTools.get_check_account_balance.handler(client, { checkAccountId: 5 });
 
-    expect(new URL(requests[0].url).searchParams.get("date")).toBe(todayInBerlin());
+    expect(new URL(requests[0].url).searchParams.get("date")).toBe("2026-10-12");
   });
 
   it.each([
@@ -68,12 +77,12 @@ describe("sevdesk-Tools", () => {
     const { client, requests } = recordingClient();
     await accountTools.list_transactions.handler(client, {
       checkAccountId: 5,
-      startDate: "2026-01-01",
+      startDate: "2026-01-01T00:00:00Z",
       endDate: "2026-01-31T23:59:59+01:00",
     });
 
     const params = new URL(requests[0].url).searchParams;
-    expect(params.get("startDate")).toBe("2026-01-01");
+    expect(params.get("startDate")).toBe("2026-01-01T00:00:00Z");
     expect(params.get("endDate")).toBe("2026-01-31T23:59:59+01:00");
   });
 
@@ -118,6 +127,76 @@ describe("sevdesk-Tools", () => {
     expect([...form.keys()]).toEqual(["file"]);
   });
 
+  it("sollte beim Abruf des Rechnungs-PDFs die Rechnung nicht als versendet markieren", async () => {
+    const { client, requests } = recordingClient();
+    await invoiceTools.get_invoice_pdf.handler(client, { invoiceId: 42 });
+
+    expect(new URL(requests[0].url).searchParams.get("preventSendBy")).toBe("true");
+  });
+
+  it("sollte Buchungen mit den Typen und Datumsformaten der Spec senden", async () => {
+    const { client, requests } = recordingClient();
+    await invoiceTools.book_invoice.handler(client, {
+      invoiceId: 42,
+      amount: 119,
+      date: 1767225600,
+      type: "FULL_PAYMENT",
+      checkAccountId: 5,
+    });
+    await voucherTools.book_voucher.handler(client, {
+      voucherId: 43,
+      amount: 59.5,
+      date: "2026-01-01T00:00:00+01:00",
+      type: "MTC",
+      checkAccountId: 5,
+    });
+
+    expect(await requests[0].json()).toMatchObject({ amount: 119, date: 1767225600, type: "FULL_PAYMENT" });
+    expect(await requests[1].json()).toMatchObject({ amount: 59.5, date: "2026-01-01T00:00:00+01:00", type: "MTC" });
+  });
+
+  it("sollte bei create_transaction den Pflichtstatus mitsenden", async () => {
+    const { client, requests } = recordingClient();
+    await accountTools.create_transaction.handler(client, {
+      checkAccountId: 5,
+      amount: -12.5,
+      valueDate: "2026-01-31T00:00:00+01:00",
+      payeePayerName: "Bäckerei Müller",
+    });
+
+    expect(await requests[0].json()).toMatchObject({
+      checkAccount: { id: 5, objectName: "CheckAccount" },
+      amount: -12.5,
+      valueDate: "2026-01-31T00:00:00+01:00",
+      payeePayerName: "Bäckerei Müller",
+      status: 100,
+    });
+  });
+
+  it("sollte Artikelpreise als Zahlen senden", async () => {
+    const { client, requests } = recordingClient();
+    await partTools.create_part.handler(client, { name: "Beratung", priceNet: 100, priceGross: 119, taxRate: 19 });
+    await partTools.update_part.handler(client, { partId: 7, priceNet: 200, taxRate: 7 });
+
+    expect(await requests[0].json()).toMatchObject({ priceNet: 100, priceGross: 119, taxRate: 19 });
+    expect(await requests[1].json()).toEqual({ priceNet: 200, taxRate: 7 });
+  });
+
+  it("sollte depth bei list_contacts als Text weitergeben", async () => {
+    const { client, requests } = recordingClient();
+    await contactTools.list_contacts.handler(client, { depth: "1" });
+
+    expect(new URL(requests[0].url).searchParams.get("depth")).toBe("1");
+  });
+
+  it("sollte base64 mit Zeilenumbrüchen korrekt dekodieren", async () => {
+    const { client, requests } = recordingClient();
+    await voucherTools.upload_voucher_file.handler(client, { fileName: "a.txt", base64Content: "QUJD\r\nRA==\n" });
+
+    const file = (await requests[0].formData()).get("file") as File;
+    expect(Buffer.from(await file.arrayBuffer()).toString()).toBe("ABCD");
+  });
+
   it("sollte bei GET-Anfragen keinen Content-Type senden", async () => {
     const { client, requests } = recordingClient();
     await accountTools.get_check_account.handler(client, { checkAccountId: 5 });
@@ -140,6 +219,13 @@ describe("Eingabeprüfung über MCP", () => {
     ["mark_invoice_as_sent", { invoiceId: 1 }],
     ["upload_voucher_file", { fileName: "beleg.pdf", base64Content: "data:application/pdf;base64,JVBERg==" }],
     ["upload_voucher_file", { fileName: "beleg.pdf", base64Content: "" }],
+    ["upload_voucher_file", { fileName: "beleg.pdf", base64Content: "QUJD\u202fRA==" }],
+    ["list_transactions", { checkAccountId: 5, startDate: "2026-01-31" }],
+    ["get_check_account_balance", { checkAccountId: 5, date: "2026-13-45" }],
+    ["book_invoice", { invoiceId: 1, amount: 1, date: 1767225600, type: "MF", checkAccountId: 5 }],
+    ["book_voucher", { voucherId: 1, amount: 1, date: "1767225600", type: "N", checkAccountId: 5 }],
+    ["create_transaction", { checkAccountId: 5, amount: 1, valueDate: "2026-01-31T00:00:00Z" }],
+    ["list_contacts", { depth: "2" }],
   ])("sollte %s mit %j ablehnen, ohne sevdesk aufzurufen", async (name, args) => {
     const { client, requests, close } = await connect();
     try {
@@ -147,6 +233,20 @@ describe("Eingabeprüfung über MCP", () => {
       expect(result.isError).toBe(true);
       expect(JSON.stringify(result.content)).toContain("Input validation error");
       expect(requests).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it.each([
+    ["list_transactions", { checkAccountId: 5, startDate: "2026-01-31T00:00:00Z", endDate: "2026-01-31T23:59:59+01:00" }],
+    ["get_check_account_balance", { checkAccountId: 5, date: "2026-02-28" }],
+  ])("sollte %s mit gültigen Datumsangaben %j annehmen", async (name, args) => {
+    const { client, requests, close } = await connect();
+    try {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).toBeFalsy();
+      expect(requests).toHaveLength(1);
     } finally {
       await close();
     }

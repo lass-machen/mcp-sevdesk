@@ -1,8 +1,13 @@
 import { z } from "zod";
 import type { SevdeskClient } from "../client.js";
 
+// Line breaks and spaces are allowed between base64 characters, nothing else
+function compactBase64(value: string): string {
+  return value.replace(/[ \t\r\n]/g, "");
+}
+
 function isBase64(value: string): boolean {
-  const compact = value.replace(/\s/g, "");
+  const compact = compactBase64(value);
   return compact.length > 0 && compact.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact);
 }
 
@@ -66,8 +71,16 @@ export const voucherTools = {
     inputSchema: z.object({
       voucherId: z.number().int().positive().describe("The ID of the voucher to book"),
       amount: z.number().describe("Amount to book"),
-      date: z.string().describe("Booking date (Unix timestamp)"),
-      type: z.enum(["N", "CB", "CF", "O", "OF", "MF", "C"]).describe("Booking type: N=Normal, CB=Cash discount, etc."),
+      date: z.iso
+        .datetime({ offset: true })
+        .describe("Booking date as ISO 8601 date-time, e.g. 2026-01-31T00:00:00+01:00"),
+      type: z
+        .enum(["FULL_PAYMENT", "N", "CB", "CF", "O", "OF", "MTC"])
+        .describe(
+          "Booking type: FULL_PAYMENT=normal booking, N=partial booking, CB=reduced by cash discount (Skonto), " +
+            "CF=currency fluctuation (deprecated), O=reduced or higher for other reasons, " +
+            "OF=higher due to reminder charges, MTC=reduced by monetary traffic costs"
+        ),
       checkAccountId: z.number().int().positive().describe("ID of the check account"),
       checkAccountTransactionId: z.number().int().positive().optional().describe("ID of an existing transaction to link"),
       createFeed: z.boolean().optional().describe("Create a feed entry"),
@@ -76,7 +89,7 @@ export const voucherTools = {
       voucherId: number;
       amount: number;
       date: string;
-      type: "N" | "CB" | "CF" | "O" | "OF" | "MF" | "C";
+      type: "FULL_PAYMENT" | "N" | "CB" | "CF" | "O" | "OF" | "MTC";
       checkAccountId: number;
       checkAccountTransactionId?: number;
       createFeed?: boolean;
@@ -144,7 +157,8 @@ export const voucherTools = {
     }) => {
       // The endpoint expects multipart/form-data with the field "file", not JSON
       const form = new FormData();
-      form.append("file", new Blob([Buffer.from(params.base64Content, "base64")]), params.fileName);
+      // Decode exactly the string that was validated
+      form.append("file", new Blob([Buffer.from(compactBase64(params.base64Content), "base64")]), params.fileName);
       const { data, error } = await client.POST("/Voucher/Factory/uploadTempFile", {
         body: form as any,
       });

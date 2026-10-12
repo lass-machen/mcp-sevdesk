@@ -102,8 +102,8 @@ describe("Accounts API (lesend)", () => {
         // The API expects ISO 8601 dates here, not Unix timestamps
         const params = accountTools.list_transactions.inputSchema.parse({
           checkAccountId,
-          startDate: "2024-01-01",
-          endDate: "2024-12-31",
+          startDate: "2024-01-01T00:00:00+01:00",
+          endDate: "2024-12-31T23:59:59+01:00",
           limit: 10,
         });
 

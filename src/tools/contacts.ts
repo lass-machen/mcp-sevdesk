@@ -5,14 +5,17 @@ export const contactTools = {
   list_contacts: {
     description: "List all contacts from sevdesk. Supports filtering by various parameters.",
     inputSchema: z.object({
-      depth: z.number().optional().describe("Defines depth of sub-objects returned"),
+      depth: z
+        .enum(["0", "1"])
+        .optional()
+        .describe("Which contacts to return: 0=only organizations, 1=organizations and persons"),
       customerNumber: z.string().optional().describe("Filter by customer number"),
       name: z.string().optional().describe("Filter by contact name"),
       limit: z.number().int().positive().optional().describe("Limit the number of results (max 1000)"),
       offset: z.number().int().nonnegative().optional().describe("Skip a number of results"),
     }),
     handler: async (client: SevdeskClient, params: {
-      depth?: number;
+      depth?: "0" | "1";
       customerNumber?: string;
       name?: string;
       limit?: number;
@@ -21,7 +24,7 @@ export const contactTools = {
       const { data, error } = await client.GET("/Contact", {
         params: {
           query: {
-            depth: params.depth as "0" | "1" | undefined,
+            depth: params.depth,
             customerNumber: params.customerNumber,
             name: params.name,
             limit: params.limit,
