@@ -12,6 +12,10 @@ src/generated/
 .env.local
 .env.*.local
 
+# Local deployment overrides (reverse proxy routing, host-specific settings)
+compose.override.yaml
+compose.override.yml
+
 # IDE
 .idea/
 .vscode/
@@ -33,3 +37,7 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+# Local agent tooling and app data (vord child reports, notes, client configs)
+.vord/
+.kimi-code/

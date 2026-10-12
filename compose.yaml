@@ -1,0 +1,42 @@
+# Streamable HTTP deployment of the sevdesk MCP server.
+#
+# Secrets are read from .env (see .env.example). Reverse proxy routing
+# (e.g. Traefik labels and networks) belongs in a local compose.override.yaml,
+# which is excluded from version control.
+
+services:
+  mcp-sevdesk:
+    build:
+      context: .
+    image: mcp-sevdesk:latest
+    init: true
+    restart: unless-stopped
+    # Longer than the application's own 10s shutdown timeout
+    stop_grace_period: 20s
+    environment:
+      SEVDESK_API_TOKEN: ${SEVDESK_API_TOKEN:?SEVDESK_API_TOKEN must be set in .env}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?MCP_AUTH_TOKEN must be set in .env}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+      MCP_HTTP_BODY_LIMIT: ${MCP_HTTP_BODY_LIMIT:-}
+      MCP_TRANSPORT: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "3000"
+    expose:
+      - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
