@@ -129,11 +129,17 @@ Dieses Repository ist ein Fork von [nikolausm/mcp-sevdesk](https://github.com/ni
 - Korrekturen an einzelnen Tools, abgeglichen mit der OpenAPI-Spezifikation von sevdesk (gegen die echte API noch nicht geprüft):
   - `mark_invoice_as_sent` sendet `sendType` und `sendDraft` im JSON-Body statt als Query-Parameter. `sendType` ist jetzt Pflicht, `sendDraft` ist standardmäßig `false`.
   - `upload_voucher_file` lädt die Datei als `multipart/form-data` im Feld `file` hoch. Die Parameter `voucherId` und `creditDebit` entfallen, weil der Endpunkt sie nicht kennt und die Datei nur temporär ablegt.
-  - `list_transactions` erwartet `startDate` und `endDate` als ISO-8601-Datum oder -Zeitpunkt statt als Unix-Zeitstempel.
+  - `get_invoice_pdf` sendet immer `preventSendBy=true`. Ohne diesen Parameter markiert sevdesk die Rechnung beim Abruf des PDFs als versendet; das Tool ist damit wirklich lesend. Der Parameter `preventSendBy` entfällt.
+  - `list_transactions` erwartet `startDate` und `endDate` als ISO-8601-Zeitpunkt mit Zeitzone statt als Unix-Zeitstempel.
+  - `book_invoice` und `book_voucher` verwenden die Buchungstypen der Spec (`FULL_PAYMENT`, `N`, `CB`, `CF`, `O`, `OF`, `MTC`); die dort unbekannten `MF` und `C` entfallen. Das Buchungsdatum ist bei Rechnungen ein Unix-Zeitstempel, bei Belegen ein ISO-8601-Zeitpunkt.
+  - `create_transaction` sendet den Pflichtstatus (Standard `100`, angelegt) und verlangt `payeePayerName`; Wert- und Buchungsdatum sind ISO-8601-Zeitpunkte.
+  - `create_part` und `update_part` senden Preise und Steuersatz als Zahl statt als Text.
+  - `list_contacts` akzeptiert für `depth` nur `0` (nur Organisationen) oder `1` (Organisationen und Personen).
   - `list_invoices` und `list_vouchers` erwarten `startDate` und `endDate` als ganze Zahl (Unix-Zeitstempel in Sekunden) statt als Text.
   - `list_check_accounts` gibt `limit` und `offset` an die API weiter.
   - `get_check_account_balance` erwartet `date` im Format `YYYY-MM-DD` und verwendet standardmäßig das heutige Datum in Deutschland statt das UTC-Datum.
-  - IDs, `limit` und `offset` akzeptieren nur ganze Zahlen.
+  - IDs und `limit` akzeptieren nur positive ganze Zahlen, `offset` nur ganze Zahlen ab 0.
+  - Die Listen-Tools senden `limit` und `offset`, obwohl die Spec sie nicht für jeden Endpunkt aufführt; sevdesk unterstützt sie nach bisheriger Nutzung allgemein (nicht gegen die echte API geprüft).
 
 ## Verfügbare Tools
 
@@ -145,8 +151,7 @@ Jedes Tool trägt MCP-Annotations (`readOnlyHint`, `destructiveHint`, `idempoten
 - **Anlegend**: `create_contact`, `create_part`, `create_tag`, `create_transaction`, `upload_voucher_file`.
 - **Ändernd oder löschend** (`destructiveHint: true`): `update_contact`, `delete_contact`, `update_part`, `update_tag`, `delete_tag`, `mark_invoice_as_sent`, `book_invoice`, `cancel_invoice`, `book_voucher` und `send_invoice_by_email`, das zusätzlich eine E-Mail außerhalb von sevdesk verschickt (`openWorldHint: true`).
 
-Mit `MCP_READ_ONLY=true` registriert der Server nur die lesenden Tools. Schreibende Tools erscheinen dann nicht in `tools/list` und lassen sich nicht aufrufen. So lässt sich etwa eine zweite, rein lesende Instanz mit eigenem Token betreiben.
-
+Mit `MCP_READ_ONLY=true` registriert der Server nur die lesenden Tools. Schreibende Tools erscheinen dann nicht in `tools/list` und lassen sich nicht aufrufen. So lässt sich etwa eine zweite, rein lesende Instanz mit eigenem Token betreiben. Die Einordnung folgt der API-Spezifikation von sevdesk. Die dort beschriebene Nebenwirkung beim PDF-Abruf (Markierung der Rechnung als versendet) unterdrückt `get_invoice_pdf` immer.
 
 ### Kontakte
 
