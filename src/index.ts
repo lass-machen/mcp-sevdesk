@@ -26,9 +26,11 @@ async function main() {
   const serverOptions: ServerOptions = {
     readOnly: parseBooleanEnv("MCP_READ_ONLY", process.env.MCP_READ_ONLY),
   };
-  if (serverOptions.readOnly) {
-    console.error("Read-only mode: only read-only tools are available");
-  }
+  console.error(
+    serverOptions.readOnly
+      ? "Read-only mode: only read-only tools are available"
+      : "All tools are available, including those that change data (MCP_READ_ONLY=true restricts to read-only tools)"
+  );
 
   switch (TRANSPORT) {
     case "stdio": {

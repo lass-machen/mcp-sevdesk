@@ -95,12 +95,37 @@ describe("Tool-Annotations", () => {
     }
   });
 
-  it("sollte Löschen, Buchen und E-Mail-Versand als destruktiv kennzeichnen", () => {
-    for (const name of ["delete_contact", "delete_tag", "book_invoice", "book_voucher", "cancel_invoice", "send_invoice_by_email"]) {
-      expect(toolAnnotations[name].destructiveHint, name).toBe(true);
-    }
-    expect(toolAnnotations.send_invoice_by_email.openWorldHint).toBe(true);
-    expect(toolAnnotations.book_invoice.idempotentHint).toBe(false);
+  // Same lists as in the README section "Lesende und schreibende Tools"
+  const createTools = ["create_contact", "create_part", "create_tag", "create_transaction", "upload_voucher_file"];
+  const destructiveTools = [
+    "book_invoice",
+    "book_voucher",
+    "cancel_invoice",
+    "delete_contact",
+    "delete_tag",
+    "mark_invoice_as_sent",
+    "send_invoice_by_email",
+    "update_contact",
+    "update_part",
+    "update_tag",
+  ];
+  const idempotentWriteTools = [
+    "delete_contact",
+    "delete_tag",
+    "mark_invoice_as_sent",
+    "update_contact",
+    "update_part",
+    "update_tag",
+  ];
+
+  it("sollte genau die dokumentierten Tools als anlegend, destruktiv und idempotent einordnen", () => {
+    const names = Object.keys(toolAnnotations);
+    const select = (predicate: (name: string) => boolean) => names.filter(predicate).sort();
+    const isWrite = (name: string) => toolAnnotations[name].readOnlyHint === false;
+    expect(select((name) => isWrite(name) && toolAnnotations[name].destructiveHint === false)).toEqual(createTools);
+    expect(select((name) => toolAnnotations[name].destructiveHint === true)).toEqual(destructiveTools);
+    expect(select((name) => isWrite(name) && toolAnnotations[name].idempotentHint === true)).toEqual(idempotentWriteTools);
+    expect(select((name) => toolAnnotations[name].openWorldHint === true)).toEqual(["send_invoice_by_email"]);
   });
 
   it("sollte die Annotations über tools/list ausliefern", async () => {

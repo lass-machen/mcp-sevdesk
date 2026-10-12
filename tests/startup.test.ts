@@ -34,16 +34,22 @@ async function freePort(): Promise<number> {
 }
 
 // Runs the real entry point in a child process, so signal handling does not affect the test runner
-function spawnEntryPoint(env: Record<string, string>): { child: ChildProcess; stderr: () => string } {
+function spawnEntryPoint(env: Record<string, string>): {
+  child: ChildProcess;
+  stderr: () => string;
+  stdout: () => string;
+} {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: ROOT,
     env: { PATH: process.env.PATH ?? "", SEVDESK_API_TOKEN: "dummy-sevdesk-token", ...env },
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
   children.push(child);
   let output = "";
+  let stdoutOutput = "";
   child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-  return { child, stderr: () => output };
+  child.stdout?.on("data", (chunk: Buffer) => (stdoutOutput += chunk.toString()));
+  return { child, stderr: () => output, stdout: () => stdoutOutput };
 }
 
 async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
@@ -56,13 +62,14 @@ async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<vo
   }
 }
 
-async function startServer(): Promise<RunningServer> {
+async function startServer(extraEnv: Record<string, string> = {}): Promise<RunningServer> {
   const port = await freePort();
   const { child, stderr } = spawnEntryPoint({
     MCP_TRANSPORT: "http",
     MCP_AUTH_TOKEN: AUTH_TOKEN,
     MCP_HTTP_HOST: "127.0.0.1",
     MCP_HTTP_PORT: String(port),
+    ...extraEnv,
   });
   const deadline = Date.now() + 15_000;
   while (!stderr().includes("listening on")) {
@@ -149,5 +156,74 @@ describe("startHttpServer (Kindprozess)", () => {
     expect(await exitOf(child)).toEqual({ code: 1, signal: null });
     expect(stderr()).toContain("Configuration error: MCP_AUTH_TOKEN is required when MCP_TRANSPORT=http");
     expect(stderr()).not.toContain("    at ");
+  });
+});
+
+describe("MCP_READ_ONLY (Kindprozess)", () => {
+  async function listToolsOverHttp(port: number): Promise<string[]> {
+    const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${AUTH_TOKEN}`,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    const body = await res.json();
+    return body.result.tools.map((tool: { name: string }) => tool.name);
+  }
+
+  it("sollte über HTTP nur lesende Tools anbieten", async () => {
+    const { child, port, stderr } = await startServer({ MCP_READ_ONLY: "true" });
+    const tools = await listToolsOverHttp(port);
+    expect(tools).toHaveLength(19);
+    expect(tools).not.toContain("delete_contact");
+    expect(stderr()).toContain("Read-only mode: only read-only tools are available");
+    child.kill("SIGTERM");
+    await exitOf(child);
+  });
+
+  it("sollte ohne MCP_READ_ONLY alle Tools anbieten und das melden", async () => {
+    const { child, port, stderr } = await startServer();
+    expect(await listToolsOverHttp(port)).toHaveLength(34);
+    expect(stderr()).toContain("All tools are available, including those that change data");
+    child.kill("SIGTERM");
+    await exitOf(child);
+  });
+
+  it("sollte über stdio nur lesende Tools anbieten", async () => {
+    const { child, stdout } = spawnEntryPoint({ MCP_READ_ONLY: "1" });
+    const messages = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "vitest", version: "0" } },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ];
+    child.stdin?.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
+    await waitFor(() => stdout().includes('"id":2'));
+    const response = stdout()
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find((message) => message.id === 2);
+    expect(response.result.tools).toHaveLength(19);
+    child.stdin?.end();
+    child.kill("SIGTERM");
+    await exitOf(child);
+  });
+
+  it("sollte ungültige Werte mit Exit-Code 1 ablehnen", async () => {
+    const { child, stderr } = spawnEntryPoint({
+      MCP_TRANSPORT: "http",
+      MCP_AUTH_TOKEN: AUTH_TOKEN,
+      MCP_READ_ONLY: "yes",
+    });
+    expect(await exitOf(child)).toEqual({ code: 1, signal: null });
+    expect(stderr()).toContain('Configuration error: MCP_READ_ONLY must be true or false, got "yes"');
   });
 });
