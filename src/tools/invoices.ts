@@ -55,8 +55,8 @@ export const invoiceTools = {
 
   get_invoice_pdf: {
     description:
-      "Get the PDF of an invoice as base64 encoded string. Does not mark the invoice as sent; " +
-      "use mark_invoice_as_sent for that.",
+      "Get the PDF of an invoice as base64 encoded string. Sends preventSendBy=true so that the " +
+      "invoice is not marked as sent; use mark_invoice_as_sent for that.",
     inputSchema: z.object({
       invoiceId: z.number().int().positive().describe("The ID of the invoice"),
       download: z.boolean().optional().describe("Whether to download the PDF"),
@@ -70,7 +70,8 @@ export const invoiceTools = {
           path: { invoiceId: params.invoiceId },
           query: {
             download: params.download,
-            // Without this, sevdesk marks the invoice as sent; reading a PDF must not change data
+            // Reading a PDF must not change data. The spec only says "Defines if u want to send the
+            // invoice"; the upstream tests set it so the invoice is not marked as sent (not verified live)
             preventSendBy: true,
           },
         },
