@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
-import type { SevdeskClient } from "./client.js";
+import { SevdeskRequestError, type SevdeskClient } from "./client.js";
 import {
   contactTools,
   invoiceTools,
@@ -54,7 +54,17 @@ export function createServer(client: SevdeskClient): McpServer {
         inputSchema: tool.inputSchema,
       },
       async (args: unknown): Promise<CallToolResult> => {
-        const result = await tool.handler(client, args);
+        let result: unknown;
+        try {
+          result = await tool.handler(client, args);
+        } catch (error) {
+          // openapi-fetch parses the response body as JSON after the client middleware has run
+          if (error instanceof SyntaxError) {
+            const message = `sevdesk API returned a response that is not valid JSON: ${error.message}`;
+            throw new SevdeskRequestError(message, { cause: error });
+          }
+          throw error;
+        }
         // An empty API response would otherwise yield an undefined text field
         return {
           content: [
