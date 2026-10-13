@@ -451,18 +451,6 @@ export async function startHttpServer(
   const app = createHttpApp(config, createMcpServer);
   const httpServer = await listenHttp(app, config.port, config.host);
 
-  console.error(`sevdesk MCP server listening on http://${config.host}:${config.port}${MCP_PATH}`);
-  console.error(
-    config.allowedHosts.length > 0
-      ? `Allowed Host headers: ${config.allowedHosts.join(", ")}`
-      : "Host header validation is disabled (MCP_ALLOWED_HOSTS not set)"
-  );
-  console.error(
-    config.allowedOrigins.length > 0
-      ? `Allowed origins: ${config.allowedOrigins.join(", ")}`
-      : "Origin validation is disabled (MCP_ALLOWED_ORIGINS not set)"
-  );
-
   let shuttingDown = false;
   const shutdown = (signal: NodeJS.Signals) => {
     // A second signal (e.g. pressing Ctrl+C twice) skips waiting for open requests
@@ -489,6 +477,20 @@ export async function startHttpServer(
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+
+  // Logged only once the signal handlers are installed: without a listener, a signal right after
+  // this message would terminate the process with Node's default action instead of shutting down
+  console.error(`sevdesk MCP server listening on http://${config.host}:${config.port}${MCP_PATH}`);
+  console.error(
+    config.allowedHosts.length > 0
+      ? `Allowed Host headers: ${config.allowedHosts.join(", ")}`
+      : "Host header validation is disabled (MCP_ALLOWED_HOSTS not set)"
+  );
+  console.error(
+    config.allowedOrigins.length > 0
+      ? `Allowed origins: ${config.allowedOrigins.join(", ")}`
+      : "Origin validation is disabled (MCP_ALLOWED_ORIGINS not set)"
+  );
 
   return httpServer;
 }
