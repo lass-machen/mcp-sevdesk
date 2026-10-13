@@ -625,11 +625,16 @@ describe("closeHttpServer", () => {
   }
 
   // Fails with a clear message instead of running into the 30s test timeout
-  function within<T>(promise: Promise<T>, what: string, ms = 5_000): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), ms)),
-    ]);
+  async function within<T>(promise: Promise<T>, what: string, ms = 5_000): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), ms);
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
   interface Deferred {
     promise: Promise<void>;
@@ -695,17 +700,17 @@ describe("closeHttpServer", () => {
 
     try {
       const response = rawPost(port, agent, toolCall);
-      await started.promise;
+      await within(started.promise, "the request to reach the handler");
 
       const closed = closeHttpServer(server);
       release.resolve();
-      const res = await response;
+      const res = await within(response, "the response");
       expect(res.statusCode).toBe(200);
       // The client must not reuse a connection that is about to be closed
       expect(res.headers.connection).toBe("close");
-      expect(JSON.parse((await readBody(res)).toString()).result.isError).toBeFalsy();
+      expect(JSON.parse((await within(readBody(res), "the response body")).toString()).result.isError).toBeFalsy();
       // Resolves only once the keep-alive connection is closed, not after the 95s keep-alive timeout
-      await closed;
+      await within(closed, "the server to close");
     } finally {
       agent.destroy();
     }
@@ -728,10 +733,10 @@ describe("closeHttpServer", () => {
 
       const body = readBody(res);
       res.resume();
-      const received = await body;
+      const received = await within(body, "the response body");
       expect(received.length).toBe(Number(res.headers["content-length"]));
       expect(JSON.parse(received.toString()).result.isError).toBeFalsy();
-      await closed;
+      await within(closed, "the server to close");
     } finally {
       agent.destroy();
     }
@@ -745,7 +750,7 @@ describe("closeHttpServer", () => {
 
     try {
       const res = await rawPost(port, agent, rpc("tools/list"));
-      await readBody(res);
+      await within(readBody(res), "the response body");
       // Second connection that only sends part of a request
       const halfOpen = connect(port, "127.0.0.1");
       await once(halfOpen, "connect");
@@ -753,7 +758,7 @@ describe("closeHttpServer", () => {
       halfOpen.on("error", () => undefined);
 
       const started = Date.now();
-      await closeHttpServer(server);
+      await within(closeHttpServer(server), "the server to close");
       expect(Date.now() - started).toBeLessThan(2_000);
       halfOpen.destroy();
     } finally {
@@ -1028,8 +1033,8 @@ describe("closeHttpServer", () => {
     await within(second.started.promise, "the second request to reach the handler");
     const closed = closeHttpServer(server);
     second.release.resolve();
-    await ended;
-    await closed;
+    await within(ended, "the connection to close");
+    await within(closed, "the server to close");
 
     expect(received.match(/HTTP\/1\.1 200 OK/g)).toHaveLength(2);
     // Only the response that was still pending at shutdown announces the close
