@@ -81,12 +81,27 @@ async function startServer(extraEnv: Record<string, string> = {}): Promise<Runni
   return { child, port, stderr };
 }
 
-async function exitOf(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+// Fails with a clear message instead of running into the 30s test timeout
+async function exitOf(
+  child: ChildProcess,
+  timeoutMs = 15_000
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   if (child.exitCode !== null || child.signalCode !== null) {
     return { code: child.exitCode, signal: child.signalCode };
   }
-  const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
-  return { code, signal };
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("Timed out waiting for the server process to exit")), timeoutMs);
+  });
+  try {
+    const [code, signal] = (await Promise.race([once(child, "exit"), timeout])) as [
+      number | null,
+      NodeJS.Signals | null,
+    ];
+    return { code, signal };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Request whose body never completes: counts as a running request until shutdown gives up

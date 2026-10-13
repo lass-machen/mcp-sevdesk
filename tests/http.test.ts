@@ -6,6 +6,7 @@ import {
   createHttpApp,
   closeHttpServer,
   listenHttp,
+  startHttpServer,
   loadHttpConfig,
   ConfigError,
   MCP_PATH,
@@ -636,6 +637,7 @@ describe("closeHttpServer", () => {
       clearTimeout(timer);
     }
   }
+
   interface Deferred {
     promise: Promise<void>;
     resolve: () => void;
@@ -726,7 +728,7 @@ describe("closeHttpServer", () => {
 
     try {
       // The response has ended on the server, but most of it is still buffered
-      const res = await rawPost(port, agent, toolCall);
+      const res = await within(rawPost(port, agent, toolCall), "the response");
       res.pause();
       const closed = closeHttpServer(server);
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -749,11 +751,11 @@ describe("closeHttpServer", () => {
     const agent = new Agent({ keepAlive: true });
 
     try {
-      const res = await rawPost(port, agent, rpc("tools/list"));
+      const res = await within(rawPost(port, agent, rpc("tools/list")), "the response");
       await within(readBody(res), "the response body");
       // Second connection that only sends part of a request
       const halfOpen = connect(port, "127.0.0.1");
-      await once(halfOpen, "connect");
+      await within(once(halfOpen, "connect"), "the connection to open");
       halfOpen.write("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n");
       halfOpen.on("error", () => undefined);
 
@@ -807,7 +809,7 @@ describe("closeHttpServer", () => {
   async function rawConnection(port: number) {
     const socket = connect(port, "127.0.0.1");
     cleanups.push(() => socket.destroy());
-    await once(socket, "connect");
+    await within(once(socket, "connect"), "the connection to open");
     let received = "";
     socket.on("data", (chunk: Buffer) => (received += chunk.toString()));
     socket.on("error", () => undefined);
@@ -1015,7 +1017,7 @@ describe("closeHttpServer", () => {
     const { port } = server.address() as AddressInfo;
 
     const socket = connect(port, "127.0.0.1");
-    await once(socket, "connect");
+    await within(once(socket, "connect"), "the connection to open");
     let received = "";
     socket.on("data", (chunk: Buffer) => (received += chunk.toString()));
     const ended = once(socket, "close");
@@ -1050,7 +1052,7 @@ describe("closeHttpServer", () => {
       expect(server.keepAliveTimeout).toBe(95_000);
       expect(server.headersTimeout).toBe(100_000);
     } finally {
-      await closeHttpServer(server);
+      await within(closeHttpServer(server), "the server to close");
     }
   });
 
@@ -1065,7 +1067,7 @@ describe("closeHttpServer", () => {
         `cannot listen on 127.0.0.1:${port} (EADDRINUSE), check MCP_HTTP_HOST and MCP_HTTP_PORT`
       );
     } finally {
-      await closeHttpServer(first);
+      await within(closeHttpServer(first), "the server to close");
     }
   });
 
@@ -1114,5 +1116,42 @@ describe("closeHttpServer", () => {
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
+  });
+});
+
+describe("startHttpServer", () => {
+  it("sollte die Signal-Handler installieren, bevor die Bereitschaft gemeldet wird", async () => {
+    const events: string[] = [];
+    const installed: Array<[string, (...args: unknown[]) => void]> = [];
+    const originalOn = process.on.bind(process);
+    const recordOn = (event: string, listener: (...args: unknown[]) => void) => {
+      events.push(`on ${event}`);
+      installed.push([event, listener]);
+      return originalOn(event, listener);
+    };
+    const onSpy = vi.spyOn(process, "on").mockImplementation(recordOn as typeof process.on);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((message?: unknown) => {
+      events.push(`log ${String(message)}`);
+    });
+    let server: Server | undefined;
+    try {
+      server = await startHttpServer(baseConfig(), () => createServer(fakeClient));
+    } finally {
+      onSpy.mockRestore();
+      errorSpy.mockRestore();
+      // The test runner must not keep the shutdown handlers of the server under test
+      for (const [event, listener] of installed) {
+        process.off(event, listener);
+      }
+      if (server) {
+        await closeHttpServer(server);
+      }
+    }
+    const ready = events.findIndex((event) => event.startsWith("log sevdesk MCP server listening on"));
+    expect(ready).toBeGreaterThan(-1);
+    expect(events.indexOf("on SIGTERM")).toBeGreaterThan(-1);
+    expect(events.indexOf("on SIGTERM")).toBeLessThan(ready);
+    expect(events.indexOf("on SIGINT")).toBeGreaterThan(-1);
+    expect(events.indexOf("on SIGINT")).toBeLessThan(ready);
   });
 });
